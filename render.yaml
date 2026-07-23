@@ -1,0 +1,71 @@
+services:
+  - type: web
+    name: jatai-app
+    runtime: static
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    staticPublishPath: ./dist
+    pullRequestPreviewsEnabled: false
+    headers:
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_SUPABASE_URL
+        value: https://kzlxysxvvlupjtrmxqmb.supabase.co
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt6bHh5c3h2dmx1cGp0cm14cW1iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTM3MDUsImV4cCI6MjA5MjQ2OTcwNX0.iU5enYnsJExOHtbwpJKQ4bMGZS8hzQIURi6T2y2EQVM
+      - key: VITE_SUPABASE_PROJECT_ID
+        value: kzlxysxvvlupjtrmxqmb
+      - key: VITE_OLLAMA_URL
+        value: https://unabashed-vertical-crispness.ngrok-free.dev/api/generate
+      - key: VITE_OLLAMA_MODEL
+        value: qwen2.5:3b-instruct
+  - type: web
+    name: kenia-whatsapp-backend
+    runtime: node
+    plan: free
+    renderSubdomainPolicy: enabled
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: baileys-auth
+      mountPath: /opt/render/project/src/backend/auth
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: AUTH_DIR
+        value: /opt/render/project/src/backend/auth
+      - key: SUPABASE_URL
+        value: https://kzlxysxvvlupjtrmxqmb.supabase.co
+      - key: SUPABASE_ANON_KEY
+        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt6bHh5c3h2dmx1cGp0cm14cW1iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTM3MDUsImV4cCI6MjA5MjQ2OTcwNX0.iU5enYnsJExOHtbwpJKQ4bMGZS8hzQIURi6T2y2EQVM
+      - key: OLLAMA_URL
+        value: https://unabashed-vertical-crispness.ngrok-free.dev
+      - key: OLLAMA_MODEL
+        value: qwen2.5:3b-instruct
+      - key: AI_REQUEST_TIMEOUT_MS
+        value: "90000"
+      - key: OLLAMA_GENERATE_TIMEOUT_MS
+        value: "90000"
+      - key: OLLAMA_PROBE_TIMEOUT_MS
+        value: "30000"
+      - key: OLLAMA_REQUEST_RETRIES
+        value: "0"
+      - key: QR_TIMEOUT_MS
+        value: "900000"
+      - key: QR_RENEW_AFTER_MS
+        value: "240000"
+      - key: CONNECT_TIMEOUT_MS
+        value: "120000"
+      - key: KEEP_ALIVE_INTERVAL_MS
+        value: "15000"
+      - key: RECONNECT_MAX_DELAY_MS
+        value: "300000"
