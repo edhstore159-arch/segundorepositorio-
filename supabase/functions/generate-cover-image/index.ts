@@ -1,17 +1,456 @@
 import { generateWithNanoBanana, stripDataUrl } from '../_shared/nano-banana.ts';
-import { generateImage } from '../_shared/llm.ts';
+import { generateImage, hasHumanSubject, hasHybridRequest, isScenerySubject } from '../_shared/llm.ts';
+import { chatCompletion } from '../_shared/llm.ts';
+import { requireUser } from "../_shared/auth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+const REALISM =
+  "unedited RAW photograph straight out of camera, shot on Canon EOS R5 or Sony A7R IV full-frame sensor, 50mm or 85mm prime lens at f/1.8-f/2.2, ISO 200-400, 1/200s shutter, " +
+  "photojournalism and documentary photography aesthetic in the style of Magnum Photos and National Geographic, candid real moment (NOT posed, NOT stock photo, NOT AI-looking), " +
+  "16K hyper-detailed resolution with extreme micro-detail on skin: visible pores across the entire face, fine peach fuzz catching the light, subtle freckles, real moles, tiny skin imperfections, faint under-eye shadows, natural skin oiliness on the T-zone, light redness on cheeks and nose tip, fine expression lines where age-appropriate, " +
+  "individual hair strands clearly separated with natural flyaways and stray hairs, eyebrow hairs individually visible with natural irregularity, lower lashes defined, light stubble where appropriate, " +
+  "ultra-realistic eyes: detailed iris fiber patterns with radial striations and depth, dark limbal ring, wet glossy sclera with subtle red capillaries, sharp pinpoint catchlights that match the real light source position, natural tear line, soft eyelid shadow, subsurface scattering on the eyelid, " +
+  "soft directional natural window light wrapping the face, realistic soft-edged shadows, subsurface scattering on ears, nose and fingers, balanced low-contrast color grading with accurate Brazilian skin tones, slight green-magenta tint of real ambient light, " +
+  "authentic environment with real clutter, dust particles floating in light beams, fabric with real folds and weave texture, natural ISO grain preserved (NO denoising, NO smoothing, NO beauty filter), slight chromatic aberration at high-contrast edges, very subtle motion blur on moving parts, " +
+  "imperfect candid framing with the subject slightly off-center, genuine micro-expressions, looks exactly like a real photo captured by a human photographer in a real place";
+
+const NEG =
+  "digital art, illustration, painting, cartoon, anime, 3d render, CGI, plastic skin, perfect skin, airbrushed, beauty filter, " +
+  "stock photo aesthetic, AI-looking, uncanny valley, doll-like, mannequin, waxy skin, smooth skin, airbrushed skin, porcelain skin, baby skin, low-detail face, soft focus on face, oversaturated, exaggerated HDR, artificial studio lighting, overprocessed, " +
+  "deformed face, distorted face, warped face, melted face, mutated face, disfigured face, ugly face, asymmetrical face, " +
+  "asymmetrical eyes, different sized eyes, one eye bigger than the other, oversized eyes, bulging eyes, googly eyes, anime eyes, huge pupils, crossed eyes, lazy eye, misaligned eyes, duplicated eyes, extra eyes, missing eye, distorted pupils, uneven eyelids, " +
+  "deformed nose, crooked nose, double nose, deformed mouth, crooked mouth, extra mouth, missing mouth, bad teeth, extra teeth, missing teeth, fake smile, " +
+  "deformed ears, extra ears, deformed jaw, deformed chin, extra heads, two heads, multiple faces, floating head, detached head, " +
+  "deformed body, distorted anatomy, bad proportions, extra limbs, missing limbs, extra arms, extra legs, extra fingers, missing fingers, fused fingers, broken hands, deformed hands, " +
+  "bad hands, abnormal hands, malformed hands, mutated hands, distorted hands, ugly hands, duplicated fingers, duplicate fingertips, extra nails, missing nails, webbed fingers, broken fingers, bent-backwards fingers, claw hands, rubber fingers, sausage fingers, baguette fingers, long unnatural fingers, tiny hands, oversized hands, wrong thumb placement, detached hands, floating hands, hands growing from wrong place, twisted wrists, broken wrists, " +
+  "unrequested visible hands, unnecessary visible fingers, close-up hands, hand gesture when not requested, " +
+  "close-up only, face only, cropped body, blurry, low quality, watermark, logo, text, typography";
+
+const FACE_LOCK =
+  "FACE LOCK (CRITICAL — must be respected above all stylistic choices): render every visible human face as an anatomically correct, natural real face with balanced and properly aligned features. " +
+  "Exactly two eyes placed on the same natural horizontal line, similar in size/shape/opening/tilt, with both pupils centered and looking in the same coherent direction. Eye size must be anatomically correct relative to the face (roughly one eye-width between the two eyes, eye width approximately 1/5 of face width) — never oversized, never bulging, never one eye larger than the other due to generation error. Realistic pupils centered in the iris, detailed irises, natural eyelids and sharp catchlights. " +
+  "One nose centered between the eyes with realistic nostrils. One mouth with natural lips and natural teeth alignment when visible. Two ears in correct position when visible. " +
+  "Natural jawline and chin, balanced facial proportions, correct head-to-body ratio, one head per person, no duplicated, floating or detached features. " +
+  "Realistic skin texture with pores and subtle imperfections, relaxed authentic expression, no warping, no melting, no smoothing that changes identity, no beautification filter. " +
+  "If multiple people appear in the scene, every single one of them must independently respect this face lock. The composition must make visual sense — people, objects and environment coherently related, with correct scale, perspective and interaction. " +
+  "EYE COMMUNICATION (CRITICAL): the eyes must look ALIVE and EXPRESSIVE — never blank, never glazed, never zombie-like, never dead-stare. " +
+  "Both eyes must be fully open (not half-closed), with clearly defined and well-centered round pupils, vibrant irises showing natural color and depth, sharp catchlights reflecting the main light source, subtle moisture on the eye surface, and natural eyelid tension. " +
+  "The gaze must have clear INTENT and DIRECTION — looking at the camera, at another person, or at an object in the scene — conveying a real human emotion consistent with the scene (attention, empathy, curiosity, determination, warmth, focus). " +
+  "Micro-expressions around the eyes (slight brow movement, natural eyelid creases, subtle smile lines when appropriate) must reinforce the emotion. " +
+  "Forbidden: empty stare, soulless eyes, glassy eyes, white/grey pupils, misaligned gaze, cross-eyed look, unfocused eyes, eyes pointing in different directions, dilated unnatural pupils, dead expression.";
+
+const FACE_REPAIR_LOCK =
+  "FACE REPAIR LOCK: if the model is uncertain, simplify the composition before deforming the face. Prefer one to three people, keep the main face at medium portrait size, avoid tiny background faces, avoid extreme wide-angle face distortion, avoid profile faces unless requested, avoid faces partly hidden by objects, hair or hands. Run a final visual QA pass on every face: two aligned eyes, centered pupils, one nose, one mouth, normal teeth, normal jaw, no melted skin, no duplicated facial features, no facial features fused with hair/clothing/objects.";
+
+const ANATOMY_LOCK =
+  "ANATOMY LOCK (CRITICAL — must be respected above stylistic choices): render an anatomically correct human body with perfectly natural proportions and joint placement. " +
+  "Exactly two arms attached at the shoulders, two legs attached at the hips, one head attached to the neck, hands with exactly five fingers each (one thumb + four fingers, correct length and natural curl), feet with five toes each. " +
+  "All limbs must be PROPERLY CONNECTED to the torso at anatomically correct joints — shoulders, elbows, wrists, hips, knees and ankles in their natural positions, never floating, never detached, never displaced, never duplicated, never fused, never twisted backwards, never bending in impossible directions. " +
+  "Correct bone structure, correct muscle mass, correct skeletal alignment, spine in natural posture, shoulders level, hips level, symmetric limb length (left arm same length as right arm, left leg same length as right leg). " +
+  "Hands and fingers must look REAL: natural finger spacing, correct knuckles, visible nails, natural grip and gesture — NO extra fingers, NO missing fingers, NO fused fingers, NO bent-the-wrong-way joints, NO mutated hands, NO claw hands. " +
+  "If the person is sitting, standing, walking or interacting with an object, the pose must be physically plausible and biomechanically correct — center of gravity makes sense, contact points match, clothing folds follow the body underneath. " +
+  "If multiple people appear, every single one of them must independently respect this anatomy lock and their bodies must not merge, overlap incorrectly or share limbs.";
+
+const HAND_LOCK =
+  "HAND LOCK (CRITICAL — inspect and correct every visible hand before final output): every visible hand must be photorealistic, anatomically normal and proportional to the person's body. " +
+  "Each hand has exactly five fingers: one opposable thumb and four fingers, with correct knuckle count, natural nail placement, realistic palm structure, natural webbing between fingers, and believable skin folds. " +
+  "Finger lengths must be natural (middle longest, ring/index slightly shorter, pinky shortest, thumb lower and angled), with no duplicate fingertips, no extra nails, no fused fingers, no missing fingers, no claw-like fingers, no rubbery fingers, no broken joints and no fingers bending backward. " +
+  "Hands must be attached correctly at the wrist, wrists must align with forearms, and gestures must be physically possible for the scene: relaxed resting hands, natural grip, or coherent pointing/holding only when requested. " +
+  "If hands are partially hidden by clothing, objects, crop, or another person, keep the visible parts plausible and avoid inventing extra fingers. " +
+  "For group scenes, apply this hand check independently to every person; no shared hands, no merged hands, no hand growing from another body part, no displaced hands.";
+
+const CAKE_EATING_LOCK =
+  "CAKE EATING LOCK (CRITICAL for birthday/cake scenes): if the prompt asks for people eating, cutting, serving or taking a bite of birthday cake, render it as a candid real-life documentary photo at a dining table. Use a medium close-up or waist-up crop, keep the face, cake, plate and fork/spoon clear, and crop or hide wrists/fingers behind the table edge when possible. If a hand must appear, show only a simple natural grip on a fork, spoon or plate; exactly five fingers per visible hand, correct thumb placement, natural knuckles, realistic nails, no duplicated hands, no extra fingers, no missing fingers, no fused fingers. Keep cake, frosting, fork, plate, mouth, hands and skin as separate objects with realistic contact shadows — never merge cake with fingers, mouth, face, arms or body.";
+
+// Estratégia preventiva: evitar mostrar mãos quando não forem essenciais ao pedido.
+// IA de imagem ainda erra anatomia das mãos com frequência — esconder reduz drasticamente artefatos.
+const HAND_AVOIDANCE =
+  "HAND AVOIDANCE STRATEGY (apply whenever the user prompt does NOT explicitly require visible hands or a hand gesture): " +
+  "compose the framing to keep hands COMPLETELY out of view or naturally concealed. Prefer one of these solutions: " +
+  "(1) crop the frame above the wrists as a chest-up portrait, medium close-up or head-and-shoulders shot; " +
+  "(2) place hands inside pockets, behind the back, under a desk, inside long sleeves, or holding a coherent object that hides the fingers (folder, mug, phone seen from behind, book against the chest); " +
+  "(3) angle the body so hands fall outside the frame or are occluded by furniture, clothing or other people. " +
+  "Do not show loose fingers at the bottom or edges of the image. Only render fully visible hands when the user explicitly asked for a gesture, a handshake, holding something specific, or when the hands are the subject. " +
+  "If hands MUST appear, show them relaxed, at rest, partially occluded, and never in extreme close-up. Never invent gesturing hands that were not requested.";
+
+const HANDS_ARE_REQUESTED = /\b(hand|hands|finger|fingers|thumb|gesture|handshake|waving|pointing|holding|grabbing|clapping|typing|writing|eating|feeding|cutting|serving|holding\s+(a\s+)?(fork|spoon|knife|plate|cake)|m[aã]o|m[aã]os|dedo|dedos|polegar|gesto|aperto de m[aã]o|acenando|apontando|segurando|digitando|escrevendo|comendo|alimentando|cortando|servindo|segurando\s+(um\s+|uma\s+)?(garfo|colher|faca|prato|bolo))\b/i;
+const EATING_CAKE_RE = /\b(eating|feeding|taking\s+a\s+bite|bite|biting|comendo|alimentando|mordendo|dar\s+uma\s+mordida|cortando|servindo)\b[\s\S]{0,80}\b(cake|birthday\s+cake|bolo|bolo\s+de\s+anivers[áa]rio|slice\s+of\s+cake|fatia\s+de\s+bolo)\b|\b(cake|birthday\s+cake|bolo|bolo\s+de\s+anivers[áa]rio|slice\s+of\s+cake|fatia\s+de\s+bolo)\b[\s\S]{0,80}\b(eating|feeding|taking\s+a\s+bite|bite|biting|comendo|alimentando|mordendo|dar\s+uma\s+mordida|cortando|servindo)\b/i;
+
+const FRUIT_RE = /\b(fruit|fruta|apple|maçã|maca|macan|banana|laranja|orange|uva|grape|morango|strawberry|abacaxi|pineapple|melancia|watermelon|mam[ãa]o|papaya|pera|pear|manga|mango|lim[ãa]o|lemon|p[êe]ssego|peach|cereja|cherry|kiwi)\b/i;
+const LANDMARK_RE = /\b(torre\s+eiffel|eiffel\s+tower|cristo\s+redentor|estatua\s+da\s+liberdade|statue\s+of\s+liberty|big\s+ben|coliseu|colosseum|taj\s+mahal|pir[âa]mide|pyramid|monumento|monument|cathedral|catedral|igreja|church|castelo|castle|ponte|bridge|arranha-c[ée]u|skyscraper|edif[íi]cio|building|pr[ée]dio|arquitetura|architecture|landmark|skyline|cidade|city|paisagem urbana)\b/i;
+const EVENT_RE = /\b(anivers[áa]rio|birthday|festa|party|casamento|wedding|noivado|engagement|formatura|graduation|batizado|baptism|ch[áa]\s+de\s+beb[êe]|baby\s+shower|comemora[çc][ãa]o|celebration|natal|christmas|ano\s+novo|new\s+year|carnaval|carnival|reveillon|p[áa]scoa|easter|halloween|dia\s+das\s+m[ãa]es|dia\s+dos\s+pais|confraterniza[çc][ãa]o)\b/i;
+const ISOLATED_ONLY_RE = /\b(only\s+the\s+\w+|no\s+humans?|no\s+people|no\s+person|no\s+party|no\s+other\s+(subjects?|objects?)|sem\s+pessoas|apenas\s+o\s+\w+|somente\s+o\s+\w+|s[óo]\s+o\s+\w+|isolated|product\s+shot|studio\s+(shot|lighting)|clean\s+background|white\s+background)\b/i;
+function isIsolatedObjectOnly(prompt: string) {
+  return ISOLATED_ONLY_RE.test(prompt);
+}
+const FRUIT_OR_OBJECT = /\b(fruit|apple|maçã|maca|macan|banana|laranja|orange|uva|grape|morango|strawberry|abacaxi|pineapple|melancia|watermelon|mam[ãa]o|papaya|pera|pear|manga|mango|lim[ãa]o|lemon|p[êe]ssego|peach|cereja|cherry|kiwi|fruta|objeto|produto|product|object|food|comida|bolo|p[ãa]o|baguete|book|livro|carro|casa|flor|torre|tower|monumento|monument|building|edif[íi]cio|pr[ée]dio|landmark|cidade|city)\b/i;
+
+// Lista ampla de pássaros/animais (PT-BR + EN) com identificação ESPECÍFICA da espécie.
+// O nome da espécie é injetado literalmente no prompt para evitar que o modelo gere
+// um pássaro genérico ("bird") quando o usuário pediu, por exemplo, um "tucano".
+const BIRD_SPECIES: Array<{ re: RegExp; en: string; pt: string; traits: string }> = [
+  { re: /\b(sabi[áa]|rufous-bellied\s+thrush)\b/i, en: "rufous-bellied thrush (Turdus rufiventris, 'sabiá-laranjeira')", pt: "sabiá-laranjeira", traits: "small songbird, brown back, orange belly, dark head, short yellow beak" },
+  { re: /\b(beija[- ]?flor|hummingbird|colibri)\b/i, en: "hummingbird (Trochilidae)", pt: "beija-flor", traits: "tiny iridescent bird, long thin beak, hovering wings in motion blur, often near flower" },
+  { re: /\b(arara[- ]?azul|hyacinth\s+macaw)\b/i, en: "hyacinth macaw (Anodorhynchus hyacinthinus)", pt: "arara-azul", traits: "large cobalt-blue parrot, yellow eye ring and yellow patch at beak base, massive black hooked beak" },
+  { re: /\b(arara[- ]?vermelha|scarlet\s+macaw)\b/i, en: "scarlet macaw (Ara macao)", pt: "arara-vermelha", traits: "large parrot with vivid scarlet red body, blue and yellow wing feathers, white face, hooked beak" },
+  { re: /\b(arara|macaw)\b/i, en: "macaw (Ara)", pt: "arara", traits: "large colorful long-tailed parrot, strong hooked beak, vivid plumage" },
+  { re: /\b(papagaio|parrot)\b/i, en: "Amazon parrot (Amazona aestiva, 'papagaio-verdadeiro')", pt: "papagaio", traits: "medium green parrot, yellow forehead, blue around eyes, red wing patches, curved beak" },
+  { re: /\b(tucano|toucan)\b/i, en: "toco toucan (Ramphastos toco)", pt: "tucano-toco", traits: "black body, white throat, huge bright orange beak with black tip, blue skin around the eye" },
+  { re: /\b(can[áa]rio|canary)\b/i, en: "Atlantic canary (Serinus canaria)", pt: "canário", traits: "small bright yellow songbird, short conical beak" },
+  { re: /\b(coruja|owl)\b/i, en: "owl (Strigiformes)", pt: "coruja", traits: "round head, large forward-facing eyes, feather tufts, camouflaged plumage, silent posture" },
+  { re: /\b([áa]guia|eagle)\b/i, en: "eagle (Accipitridae)", pt: "águia", traits: "large raptor, hooked yellow beak, sharp talons, broad wings, piercing eyes" },
+  { re: /\b(gavi[ãa]o|hawk)\b/i, en: "hawk (Accipitridae)", pt: "gavião", traits: "medium raptor, sharp hooked beak, strong talons, brown/streaked plumage" },
+  { re: /\b(urubu|black\s+vulture|vulture)\b/i, en: "black vulture (Coragyps atratus)", pt: "urubu", traits: "all-black plumage, bare grey/black head, hooked beak, broad wings" },
+  { re: /\b(bem[- ]?te[- ]?vi|great\s+kiskadee)\b/i, en: "great kiskadee (Pitangus sulphuratus)", pt: "bem-te-vi", traits: "yellow belly, white throat, black-and-white striped head, brown back, stout black beak" },
+  { re: /\b(jo[ãa]o[- ]?de[- ]?barro|rufous\s+hornero)\b/i, en: "rufous hornero (Furnarius rufus)", pt: "joão-de-barro", traits: "small reddish-brown bird, often near its iconic round clay oven nest" },
+  { re: /\b(andorinha|swallow)\b/i, en: "swallow (Hirundinidae)", pt: "andorinha", traits: "slender bird, long pointed wings, forked tail, dark blue back, light belly, in flight" },
+  { re: /\b(pomba|pombo|dove|pigeon)\b/i, en: "rock dove / pigeon (Columba livia)", pt: "pomba", traits: "grey body, iridescent green-purple neck, short beak, red feet" },
+  { re: /\b(pardal|sparrow)\b/i, en: "house sparrow (Passer domesticus)", pt: "pardal", traits: "small brown-and-grey bird with streaked back, short conical beak" },
+  { re: /\b(periquito|parakeet|budgerigar|budgie)\b/i, en: "parakeet (Melopsittacus undulatus)", pt: "periquito", traits: "small green/yellow parrot, long tail, short hooked beak" },
+  { re: /\b(calopsita|cockatiel)\b/i, en: "cockatiel (Nymphicus hollandicus)", pt: "calopsita", traits: "small grey parrot with yellow crest and round orange cheek patches" },
+  { re: /\b(pav[ãa]o|peacock|peafowl)\b/i, en: "Indian peafowl (Pavo cristatus)", pt: "pavão", traits: "iridescent blue body, fan of long iridescent green tail feathers with eye-spots, crest on head" },
+  { re: /\b(flamingo)\b/i, en: "flamingo (Phoenicopterus)", pt: "flamingo", traits: "tall pink wading bird, long curved neck, long thin legs, downward-bent beak" },
+  { re: /\b(cisne|swan)\b/i, en: "swan (Cygnus)", pt: "cisne", traits: "large white waterbird, long curved neck, orange or black beak" },
+  { re: /\b(pato|duck)\b/i, en: "duck (Anatidae)", pt: "pato", traits: "waterbird, flat beak, webbed feet, rounded body" },
+  { re: /\b(ganso|goose)\b/i, en: "goose (Anser)", pt: "ganso", traits: "large waterbird, long neck, orange beak and feet" },
+  { re: /\b(pinguim|penguin)\b/i, en: "penguin (Spheniscidae)", pt: "pinguim", traits: "flightless seabird, black back, white belly, flipper wings, waddling posture" },
+  { re: /\b(avestruz|ostrich)\b/i, en: "ostrich (Struthio camelus)", pt: "avestruz", traits: "very large flightless bird, long bare neck and legs, fluffy black/white plumage" },
+  { re: /\b(galo|rooster)\b/i, en: "rooster (Gallus gallus domesticus)", pt: "galo", traits: "male chicken with bright red comb and wattles, long curved tail feathers, colorful plumage" },
+  { re: /\b(galinha|hen|chicken)\b/i, en: "hen (Gallus gallus domesticus)", pt: "galinha", traits: "female chicken, small red comb, rounded body, brown/white feathers" },
+  { re: /\b(p[áa]ssaro|passarinho|ave|bird)\b/i, en: "bird", pt: "pássaro", traits: "small wild bird with anatomically correct beak, eyes, feathers, wings and feet" },
+];
+
+function detectBird(prompt: string) {
+  for (const b of BIRD_SPECIES) if (b.re.test(prompt)) return b;
+  return null;
+}
+
+const MAMMAL_SPECIES: Array<{ re: RegExp; en: string; pt: string; traits: string }> = [
+  { re: /\b(on[çc]a[- ]?preta|pantera[- ]?negra|black\s+panther|melanistic\s+jaguar|black\s+jaguar)\b/i, en: "melanistic (black) jaguar (Panthera onca, 'onça-preta')", pt: "onça-preta", traits: "large powerful big cat with entirely jet-black fur, faint ghost rosettes barely visible under direct light, broad muscular head, short rounded ears, thick neck and forelimbs, amber/golden eyes, long tail; NOT a leopard, NOT a regular spotted jaguar, NOT a domestic black cat, NOT a puma" },
+  { re: /\b(on[çc]a[- ]?pintada|on[çc]a|jaguar)\b/i, en: "jaguar (Panthera onca, 'onça-pintada')", pt: "onça-pintada", traits: "large stocky big cat with golden-yellow coat covered in black rosettes that have central spots, broad head, powerful jaw, short tail; NOT a leopard, NOT a cheetah, NOT a tiger" },
+  { re: /\b(pantera|leopardo|leopard)\b/i, en: "leopard (Panthera pardus)", pt: "leopardo", traits: "slender big cat, pale yellow coat with small black rosettes WITHOUT central spots, long tail, smaller head than a jaguar" },
+  { re: /\b(puma|on[çc]a[- ]?parda|cougar|mountain\s+lion)\b/i, en: "cougar (Puma concolor, 'onça-parda')", pt: "onça-parda", traits: "uniformly tawny-brown big cat without spots or stripes, small rounded head, long thick tail with dark tip" },
+  { re: /\b(lobo[- ]?guar[áa]|maned\s+wolf)\b/i, en: "maned wolf (Chrysocyon brachyurus)", pt: "lobo-guará", traits: "tall slender canid with very long thin black legs, reddish-orange fur, large erect ears, black mane along the back" },
+];
+
+function detectMammal(prompt: string) {
+  for (const m of MAMMAL_SPECIES) if (m.re.test(prompt)) return m;
+  return null;
+}
+
+const ANIMAL_RE = /\b(p[áa]ssaro|passarinho|ave|bird|sabi[áa]|beija[- ]?flor|hummingbird|arara|macaw|papagaio|parrot|tucano|toucan|can[áa]rio|canary|coruja|owl|[áa]guia|eagle|gavi[ãa]o|hawk|urubu|vulture|bem[- ]?te[- ]?vi|kiskadee|jo[ãa]o[- ]?de[- ]?barro|hornero|andorinha|swallow|pomba|pombo|dove|pigeon|pardal|sparrow|periquito|parakeet|budgie|calopsita|cockatiel|pav[ãa]o|peacock|flamingo|cisne|swan|pato|duck|ganso|goose|pinguim|penguin|avestruz|ostrich|galo|rooster|galinha|hen|chicken|c[ãa]o|cachorro|dog|gato|cat|cavalo|horse|le[ãa]o|lion|tigre|tiger|on[çc]a|jaguar|pantera|leopardo|leopard|puma|cougar|elefante|elephant|girafa|giraffe|macaco|monkey|lobo|wolf|raposa|fox|urso|bear|coelho|rabbit|veado|deer|peixe|fish|tubar[ãa]o|shark|baleia|whale|golfinho|dolphin|tartaruga|turtle|cobra|snake|lagarto|lizard|sapo|frog|borboleta|butterfly|abelha|bee)\b/i;
+
+
+function detectQuantity(prompt: string): number {
+  const p = prompt.toLowerCase();
+  const digit = p.match(/\b(\d{1,3})\s+(p[áa]ssaro|passarinho|ave|bird|sabi[áa]|beija[- ]?flor|hummingbird|arara|macaw|tucano|toucan|can[áa]rio|canary|coruja|owl|[áa]guia|eagle|papagaio|parrot|pinguim|penguin|flamingo|cisne|swan|pato|duck)s?\b/);
+  if (digit) return Math.min(20, parseInt(digit[1], 10) || 1);
+  const words: Record<string, number> = { um: 1, uma: 1, dois: 2, duas: 2, "tr[eê]s": 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, two: 2, three: 3, four: 4, five: 5 };
+  for (const k of Object.keys(words)) {
+    if (new RegExp(`\\b${k}\\b`, "i").test(p)) return words[k];
+  }
+  return 1;
+}
+
+function objectLockFor(prompt: string) {
+  const bird = detectBird(prompt);
+  if (bird) {
+    const qty = detectQuantity(prompt);
+    // Template: [quantidade] + [nome em inglês OU científico] + [descrição visual detalhada] + [estilo]
+    const template = `${qty} ${bird.en}, ${bird.traits}, photorealistic wildlife photography, natural lighting, sharp focus, high detail, anatomically correct plumage and beak`;
+    return `SUBJECT LOCK (CRITICAL): render EXACTLY this composition using the template [quantity]+[English/scientific name]+[detailed visual description]+[style] → "${template}". Portuguese reference: "${bird.pt}". Show exactly ${qty} individual${qty > 1 ? "s" : ""} of this species — no more, no fewer. Do NOT render a generic bird, do NOT substitute for a different species, do NOT mix traits of other birds. Do not add people, faces, hands, fingers, fruit, food, or anthropomorphic traits.`;
+  }
+  const mammal = detectMammal(prompt);
+  if (mammal) {
+    return `SUBJECT LOCK (CRITICAL): the subject is a ${mammal.en} — in Portuguese "${mammal.pt}". Render EXACTLY this species, faithful to its real-world appearance: ${mammal.traits}. Do NOT substitute for a different species, do NOT mix traits with other big cats/canids/mammals. Photorealistic wildlife photography, anatomically correct head, eyes, fur/coat pattern, paws and tail. Do not add people, faces, hands, fingers, fruit, food, or anthropomorphic traits.`;
+  }
+  if (ANIMAL_RE.test(prompt)) {
+    return `SUBJECT LOCK (CRITICAL): the subject is the specific animal literally named by the user. Render ONLY that exact species with correct real-world anatomy, proportions, coloration and natural habitat. Do not substitute species, do not add people, faces, hands, fingers, fruit, food, or anthropomorphic traits.`;
+  }
+  const isFruit = FRUIT_RE.test(prompt);
+  const isLandmark = LANDMARK_RE.test(prompt);
+  const subject = isFruit ? "fruit" : (isLandmark ? "landmark / architectural structure" : "object");
+  return `SUBJECT LOCK (CRITICAL): the subject is the ${subject} literally described by the user. Render ONLY that subject as requested, with correct real-world structure, proportions and materials. Do not add unrelated items, do not add fruit or food unless the user explicitly asked for fruit, do not add people, faces, eyes, mouths, arms, hands, fingers, skin, fingernails, limbs, body parts, portraits, or anthropomorphic traits.`;
+}
+
+function scenerySceneFor(prompt: string) {
+  return [
+    `Faithful photorealistic natural landscape photograph of: ${prompt}.`,
+    "SCENERY LOCK (CRITICAL): this is a real outdoor nature/sky scene, not a portrait, not a person, not an anthropomorphic image. For sunset/sunrise: render the real sun near the horizon, illuminated clouds, warm orange/red/gold sky, realistic atmospheric light rays, natural horizon and believable terrain/ocean/mountains only when implied by the prompt.",
+    "Do NOT add human faces, eyes, mouths, portraits, people, silhouettes, hands, fingers, skin, body parts, face-like shapes in the sun, or face-like shapes in the clouds. Do NOT turn the sun into a character.",
+    "Use natural landscape photography, realistic colors, coherent scale, true sky/cloud physics, sharp focus, high detail, no surreal additions.",
+    "Negative: human, person, face, eyes, mouth, portrait, facial features, anthropomorphic sun, face in sun, face in clouds, human silhouette, hands, fingers, body parts, cartoon, CGI, illustration, text, watermark, logo.",
+    "--style raw --photorealism high --no human --no face --no eyes --no portrait --no anthropomorphic",
+  ].join(" ");
+}
+
+function eventSceneFor(prompt: string) {
+  const cakeEating = EATING_CAKE_RE.test(prompt);
+  return [
+    `Faithful photorealistic candid photograph of a real-life ${prompt} scene.`,
+    "EVENT/CELEBRATION SCENE LOCK: this is a social celebration moment with people interacting naturally — render a documentary-style event photograph with appropriate decorations, props and atmosphere for the specific occasion (for a birthday: birthday cake with lit candles, balloons, party hats, gifts, festive table; for a wedding: bride/groom attire, flowers, ceremony or reception setting; for Christmas: tree, lights, presents; adapt to whatever the user described).",
+    cakeEating ? CAKE_EATING_LOCK : "",
+    "Real Brazilian people of varied ages when applicable, authentic emotions (joy, surprise, warmth), natural posture, real environment, warm cinematic lighting, soft natural light mixed with festive ambient light (candles, string lights, lamps), shallow depth of field, 50mm or 85mm lens, documentary photojournalism aesthetic.",
+    "Do NOT replace the celebration with random fruit, food still life, abstract objects, landmarks, product photography or empty scenes. Do NOT add unrelated fruit. Faces, bodies and hands must respect the FACE LOCK, ANATOMY LOCK and HAND LOCK rules.",
+    "Negative: stock photo, AI look, plastic skin, empty room, isolated fruit, isolated object, product shot, landmark substitution, deformed faces, asymmetric eyes, malformed hands, extra fingers, missing fingers, fused fingers, duplicated hands, extra limbs, body-object fusion, cake fused with fingers, frosting fused with skin, melted, warped, cartoon, illustration, text, watermark, logo.",
+    "--style raw --photorealism high",
+  ].filter(Boolean).join(" ");
+}
+
+function handCompositionGuard(userPrompt = "") {
+  if (EATING_CAKE_RE.test(userPrompt)) {
+    return `${CAKE_EATING_LOCK} Avoid extreme hand close-ups; prefer fork/spoon/plate contact and partial wrist occlusion instead of exposed complex fingers.`;
+  }
+  if (HANDS_ARE_REQUESTED.test(userPrompt)) {
+    return "VISIBLE HANDS WERE REQUESTED: show hands only as necessary, never close-up unless requested, and run a strict final anatomy check: exactly five fingers per hand, natural thumb placement, natural knuckles, realistic nails, correct wrist connection, no extra/missing/fused fingers.";
+  }
+  return "NO HANDS REQUESTED: the final image must use a chest-up, head-and-shoulders, or above-the-wrist crop. Hands and fingers must not be visible anywhere, including image edges and foreground. Hide them behind the frame, pockets, sleeves, desk, folder, book, or body. Do not invent hands or gestures.";
+}
+
+
+// Mapeia temas jurídicos comuns para uma cena narrativa rica e simbólica,
+// para que o gerador não devolva uma cena genérica e sim algo claramente
+// relacionado ao direito invocado pelo usuário.
+type LegalTheme = { keys: RegExp; scene: string };
+const LEGAL_THEMES: LegalTheme[] = [
+  {
+    keys: /\b(viol[êe]ncia\s+(contra\s+)?(a\s+)?mulher|viol[êe]ncia\s+dom[ée]stica|maria\s+da\s+penha|feminic[íi]dio|agress[ãa]o\s+(contra\s+)?(a\s+)?mulher|abuso\s+(contra\s+)?(a\s+)?mulher)\b/i,
+    scene:
+      "uma mulher brasileira de meia-idade com expressão de medo e dor no canto esquerdo da cena, " +
+      "marcas sutis de agressão no rosto e braços, abraçando a si mesma de forma protetiva, em ambiente doméstico com pouca luz; " +
+      "ao fundo do mesmo lado, a silhueta ameaçadora e fora de foco de um homem (marido agressor), apenas insinuada, sem violência explícita visível; " +
+      "no centro da composição, um martelo de juiz (gavel) sobre uma mesa de madeira escura representando a Justiça e a Lei Maria da Penha; " +
+      "do lado direito, um advogado brasileiro de terno escuro, postura firme e olhar empático, gesticulando como se interligasse os elementos da cena — vítima, justiça e proteção legal — em uma metáfora visual de defesa de direitos",
+  },
+  {
+    keys: /\b(direitos?\s+trabalhista|justi[çc]a\s+do\s+trabalho|clt|demiss[ãa]o|rescis[ãa]o|fgts|horas?\s+extras?|ass[ée]dio\s+moral|trabalhador\s+demitido|verbas?\s+rescis[óo]rias?)\b/i,
+    scene:
+      "um trabalhador brasileiro de uniforme ou camisa social simples, expressão preocupada e cansada, segurando uma carta de demissão ou caixa de pertences pessoais, saindo de um portão de fábrica/escritório; " +
+      "ao centro da composição, símbolos da Justiça do Trabalho — martelo de juiz, balança e um exemplar da CLT sobre uma mesa; " +
+      "do lado oposto, um advogado trabalhista de terno, gesticulando como se interligasse a injustiça sofrida pelo trabalhador aos instrumentos legais que o protegem, transmitindo amparo, esperança e ação jurídica",
+  },
+  {
+    keys: /\b(aposentadoria|inss|previd[êe]nci|benef[íi]cio\s+previdenci[áa]rio|bpc\s+loas|auxilio[\s-]?doen[çc]a|pens[ãa]o\s+por\s+morte)\b/i,
+    scene:
+      "um casal idoso brasileiro sentado em frente a uma mesa com documentos do INSS, expressão de cansaço e esperança; " +
+      "ao centro, balança da Justiça e martelo de juiz sobre uma mesa de madeira; " +
+      "do outro lado, um advogado previdenciarista explicando o processo, gesticulando como se conectasse o segurado aos direitos previdenciários",
+  },
+  {
+    keys: /\b(divorcio|div[óo]rcio|guarda\s+(de\s+)?filho|pens[ãa]o\s+aliment[íi]cia|direito\s+de\s+fam[íi]lia)\b/i,
+    scene:
+      "uma família brasileira em mediação — mãe e pai sentados em lados opostos de uma mesa, uma criança ao fundo desfocada; " +
+      "ao centro, martelo de juiz e a balança da Justiça simbolizando o direito de família; " +
+      "uma advogada empática, do lado, gesticulando como se interligasse os pontos: pais, criança e proteção jurídica",
+  },
+  {
+    keys: /\b(direito\s+do\s+consumidor|cdc|procon|cobran[çc]a\s+indevida|negativa[çc][ãa]o\s+indevida)\b/i,
+    scene:
+      "um consumidor brasileiro frustrado segurando uma fatura abusiva ou cartão bloqueado; " +
+      "ao centro, código de defesa do consumidor aberto sobre a mesa, balança e martelo da Justiça; " +
+      "advogado de terno do lado, gesticulando como se conectasse o consumidor lesado às proteções legais do CDC",
+  },
+];
+
+function legalThemeExpansion(prompt: string): string | null {
+  for (const theme of LEGAL_THEMES) {
+    if (theme.keys.test(prompt)) return theme.scene;
+  }
+  return null;
+}
+
+// Reescreve o prompt do usuário em inglês descritivo, mantendo FIELMENTE o pedido.
+async function elaboratePrompt(userPrompt: string, style?: string): Promise<string> {
+  let userTheme = (userPrompt || "").trim();
+  const legalScene = legalThemeExpansion(userTheme);
+  if (legalScene) {
+    userTheme =
+      `Fotografia documental hiper-realista (não ilustração, não 3D, não arte digital) de uma cena jurídica brasileira real sobre: ${userTheme}. ` +
+      `Cena com PESSOAS REAIS brasileiras (atores adultos reais, rostos autênticos, peles com poros e imperfeições naturais, roupas reais e amassadas, expressões verdadeiras, ambiente real com objetos do dia a dia), capturada como reportagem fotojornalística — estilo Magnum / National Geographic / Folha de S.Paulo. ` +
+      `Composição editorial em três planos: ${legalScene}. ` +
+      `Iluminação natural cinematográfica (janela, luz ambiente real), 50mm ou 85mm f/1.8, profundidade de campo rasa, grão natural de ISO, sem violência explícita, sem sangue, sem cenas gráficas, tom respeitoso e protetivo, focado em conscientização e defesa de direitos. ` +
+      `PROIBIDO: ilustração, cartoon, 3D render, CGI, anime, pintura, aspecto de stock photo, pele de plástico, rostos perfeitos, look de IA, boneco, cera.`;
+  }
+
+
+  const hybrid = hasHybridRequest(userTheme);
+  const isolatedOnly = isIsolatedObjectOnly(userTheme);
+  const humanSubject = !isolatedOnly && hasHumanSubject(userTheme);
+  const isEvent = !isolatedOnly && EVENT_RE.test(userTheme);
+  const objectSubject = !hybrid && !isEvent && (!humanSubject || (FRUIT_OR_OBJECT.test(userTheme) && !EVENT_RE.test(userTheme))) || isolatedOnly;
+
+  if (isEvent && !hybrid) {
+    return eventSceneFor(userTheme);
+  }
+
+  if (!hybrid && isScenerySubject(userTheme)) {
+    return scenerySceneFor(userTheme);
+  }
+
+  // PROMPT MESTRE — animais reais: expande o nome popular/regional para descrição
+  // cientificamente correta (espécie, anatomia, habitat) antes da geração.
+  const isAnimal = !hybrid && !humanSubject && (ANIMAL_RE.test(userTheme) || !!detectBird(userTheme) || !!detectMammal(userTheme));
+  if (isAnimal) {
+    try {
+      const r = await chatCompletion({
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are a wildlife biologist and photography director. Convert the user's animal request into ONE single-line English prompt for a hyper-realistic photograph.",
+              "STEPS: (1) Normalize the (possibly popular/regional/Portuguese) name to the correct scientific species (most documented one if ambiguous). (2) Describe real biology: scientific name, real colors, size, plumage/fur/skin, body structure, natural behavior. (3) Set the real natural habitat: correct vegetation, climate, natural lighting. (4) Photographic style: wildlife photography, 200mm–400mm telephoto lens, shallow depth of field / bokeh, natural light, ultra-realistic, 8K, detailed texture.",
+              "RULES: total biological fidelity. Never invent species, never use unreal colors, never mix animals, never deform anatomy. Real photo appearance.",
+              "OUTPUT: return ONLY the final image-generation prompt (single line, English), no headers, no bullets, no explanations.",
+            ].join(" "),
+          },
+          { role: "user", content: `Animal solicitado: "${userTheme}". Gere APENAS o prompt final.` },
+        ],
+      });
+      const text = (r?.text || "").trim().replace(/^["'`]|["'`]$/g, "");
+      if (text) return text;
+    } catch (_) {
+      // fallback: segue o fluxo padrão de objeto/animal
+    }
+  }
+
+  if (hybrid) {
+    return [
+      `Surreal photorealistic hybrid rendering of: ${userTheme}.`,
+      "The subject is a surreal anthropomorphic hybrid — for example a fruit/object whose surface features a real human face (eyes, nose, mouth) seamlessly integrated into its natural shape, like a Magritte or Pixar-style surreal still life.",
+      "Render the base object (fruit/product/etc.) with realistic texture and natural form, and gently morph the requested human features INTO its surface — not a separate person holding the object. Keep facial features anatomically correct (two symmetric eyes, one nose, one mouth) and emotionally expressive. Do NOT add arms, legs, hands or fingers unless requested.",
+      "Photoreal lighting, soft natural light, sharp focus, shallow depth of field, studio still-life aesthetic.",
+      "Negative: extra limbs, hands, fingers, arms, legs, body parts, deformed face, asymmetric eyes, duplicated features, melted, warped, low quality, cartoon (unless requested), text, watermark.",
+      "--style raw --photorealism high",
+    ].join(" ");
+  }
+
+  if (objectSubject && !humanSubject) {
+    const isFruit = FRUIT_RE.test(userTheme);
+    const fruitGuide = isFruit
+      ? "If the subject is fruit or food: whole intact item, natural organic shape, realistic peel/skin texture, no deformation, no bite/cut unless requested."
+      : "Stay strictly faithful to the literal subject — do NOT add fruit, food, faces, people or unrelated decorative items.";
+    const extraNeg = isFruit ? "" : ", fruit, apple, banana, orange, food, produce, fruit basket, random food items";
+    return [
+      `Faithful photorealistic rendering of: ${userTheme}.`,
+      objectLockFor(userTheme),
+      "Use product/documentary/architectural photography, natural light, sharp focus, coherent scale and perspective, realistic textures, clean separation between the subject and background.",
+      fruitGuide,
+      `Negative: human, person, face, eyes, mouth, hands, fingers, arms, legs, skin, fingernails, portrait, anthropomorphic, hybrid, object fused with hand, melted, warped, duplicated parts, cartoon, CGI, illustration, text, watermark, logo, unrelated objects${extraNeg}.`,
+      "--style raw --photorealism high --no human --no hands --no fingers --no face --no body_parts --no object_anatomy_fusion",
+    ].join(" ");
+  }
+
+
+  const extraContext = style === "law"
+    ? "If — and only if — the user theme does not already specify a subject, you may set the scene in a modern Brazilian law-firm context. Never override or contradict the user's theme."
+    : "";
+
+  try {
+    const r = await chatCompletion({
+      temperature: 0.3,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are a director of photography and a specialist in hyper-realistic image prompts (Nano Banana style).",
+            "Your task is to convert the user's scene description into ONE single-line English prompt that produces an EXTREMELY realistic photograph — as if captured by a professional DSLR camera, NOT digital art, NOT illustration, NOT 3D render.",
+            "STRICT FIDELITY: Never change, replace, simplify or reinterpret the subject. Never invent elements not requested. Preserve ALL elements described by the user (people, objects, setting, mood, action). Translate non-English input to English while keeping exact meaning.",
+            "ALWAYS FILL THESE FIELDS in the output prompt:",
+            "- SCENE: describe the scene faithfully from the user theme.",
+            "- CHARACTER: realistic appearance, natural skin imperfections, light stubble when appropriate, authentic emotional expression (concern, tiredness, reflection, joy — whatever fits). Never perfect or artificial faces. Brazilian appearance unless the user says otherwise.",
+            `- FACE QUALITY: ${FACE_LOCK}`,
+            `- FACE REPAIR: ${FACE_REPAIR_LOCK}`,
+            `- HAND QUALITY: ${HAND_LOCK}`,
+            `- HAND FRAMING: ${HAND_AVOIDANCE}`,
+            `- CAKE EATING SCENES: ${CAKE_EATING_LOCK}`,
+            "DEFAULT HAND RULE: when hands are not explicitly requested by the user theme, do not render hands or fingers at all. Use a chest-up crop above the wrists.",
+            "- ENVIRONMENT: real environment (simple home, office, street, etc.) with natural elements and imperfections (objects slightly out of place, real texture, light dust, wear).",
+            "- LIGHTING: realistic cinematic lighting — soft natural window light, soft realistic shadows, balanced contrast, no exaggerated HDR.",
+            "- CAMERA: 50mm or 85mm lens, shallow depth of field (slightly blurred background), focus on the face, DSLR photography style, natural ISO, no artificial noise.",
+            "- STYLE: documentary photography, ultra realistic, natural colors (no oversaturation), no Instagram filter, no AI look.",
+            "- DETAILS: real skin texture (pores, small imperfections), eyes with natural light reflections, real fabric folds, nothing plastic or CGI.",
+            "FORBIDDEN: digital art, cartoon, 3D render, perfect skin, exaggerated artificial lighting, stock-photo aesthetic.",
+            "GOAL: the image must look like a REAL photograph of a true, emotional, everyday situation.",
+            "OUTPUT FORMAT: ONE single-line English prompt. No markdown, no bullet points, no explanations. End with: '--style raw --no artificial --no smooth skin --no CGI --photorealism high'.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: `USER THEME (render this faithfully, do not replace it):\n"""${userTheme}"""\n\n${extraContext}`.trim(),
+        },
+      ],
+    });
+    if (r.ok) {
+      const txt = r.data?.choices?.[0]?.message?.content?.trim();
+      if (txt && txt.length > 10) return txt;
+    }
+  } catch (_e) { /* fallback */ }
+
+  return `${userTheme}. ${REALISM}. ${FACE_LOCK}. Negative: ${NEG}. --style raw --no artificial --no smooth skin --no CGI --photorealism high`;
+}
+
+
+
+// Mapeia formato/rede social para dimensões nativas do criativo,
+// evitando distorção e melhorando o realismo por conta do enquadramento correto.
+function pickSize(network?: string, format?: string): string {
+  const key = `${(network || "").toLowerCase()}|${(format || "").toLowerCase()}`;
+  // formatos explícitos
+  if (/1080x1920|9x16|story|reels?|tiktok|shorts/.test(key)) return "1024x1792";
+  if (/1080x1350|4x5|portrait|feed/.test(key)) return "1024x1280";
+  if (/1200x628|1200x630|16x9|1920x1080|landscape|banner|linkedin|youtube|facebook_cover/.test(key)) return "1792x1024";
+  if (/square|1x1|1080x1080|instagram(?!.*story)/.test(key)) return "1024x1024";
+  return "1024x1024";
+}
+
+// Reforço de fidelidade a objetos/animais reais — evita "genérico".
+const OBJECT_FIDELITY_LOCK =
+  "OBJECT & SPECIES FIDELITY LOCK (CRITICAL): render every named object, animal, plant, landmark or product with 100% accurate real-world reference. " +
+  "Match the exact species/model/variant: correct silhouette, proportions, color palette, texture, materials, markings, patterns and anatomical details as they appear in reality (as if photographed from a real specimen). " +
+  "Birds: correct beak shape/size/color, correct eye ring, correct plumage pattern and colors per species, correct feet, correct body proportions and posture — no chimeric or generic 'bird'. " +
+  "Animals: correct fur/scale pattern, correct body proportions and limb count, no mutations. " +
+  "Objects/products: correct scale relative to environment, correct materials/reflectivity, correct proportions, no fantasy variations. " +
+  "Landmarks/architecture: correct real-world geometry, correct number of towers/floors/arches, correct materials. " +
+  "Scale coherence: every object in the frame must have plausible real-world size relative to nearby objects and people. " +
+  "If the model is uncertain about a specific species/model, prefer the most iconic real-world reference and never invent hybrid or made-up variants.";
+
+// Reforço fotográfico para naturezas/animais (National Geographic).
+const ULTRA_REALISM_NATURE =
+  "Ultra-realistic nature photography, authentic subject with scientifically accurate anatomy and proportions, natural colors, realistic textures, high-detail feathers/fur/skin/materials, subtle imperfections, physically accurate lighting, soft natural sunlight, shallow depth of field, professional wildlife photography, DSLR, 400mm telephoto lens, f/4, RAW photo, ultra-sharp focus on the subject, realistic background bokeh, no CGI, no illustration, no painting, no 3D render, no fantasy, no oversaturation, no artificial colors, documentary photography, National Geographic style, extremely photorealistic.";
+
+// Reforço fotográfico genérico para objetos/produtos/cenários.
+const ULTRA_REALISM_OBJECT =
+  "Photorealistic product and nature photography, physically based rendering (PBR), realistic materials, accurate proportions, authentic textures, natural wear and imperfections, true-to-life colors, realistic reflections and shadows, global illumination, soft natural lighting, high dynamic range, ultra-high resolution, sharp focus, professional photography, RAW image, no CGI, no illustration, no cartoon, no painting, no artificial details, extremely realistic.";
+
+// Detecta pedido de figura pública real (presidente, papa, celebridade nomeada etc.)
+const PUBLIC_FIGURE_RE = /\b(presidente|president|primeiro[- ]ministro|prime minister|papa|pope|rei\b|king\b|rainha|queen|governador|governor|senador|senator|deputad[oa]|prefeit[oa]|ministr[oa]|chanceler|chancellor|c[oô]nsul|ditador|dictator|celebridade|celebrity|ator famoso|atriz famosa|cantor famoso|cantora famosa|jogador famoso|lula|bolsonaro|trump|biden|obama|putin|zelensky|macron|xi jinping|kim jong|modi|erdogan|netanyahu|milei|maduro|papa francisco|elon musk|messi|neymar|ronaldo|cristiano ronaldo|beyonc[eé]|taylor swift)\b/i;
+
+// Reforço fotojornalístico para figuras públicas reais — likeness fiel à pessoa real.
+const PUBLIC_FIGURE_REALISM =
+  "REAL-PERSON LIKENESS LOCK (CRITICAL): the requested person is a REAL public figure. Render an accurate photojournalistic likeness matching the person's real-world appearance as seen in press photos and official portraits — correct age, ethnicity, skin tone, hair color/style, facial hair, eye color, face shape, nose shape, jawline, ears, characteristic wrinkles, marks and expressions. " +
+  "Correct real-world wardrobe consistent with the role (e.g., a president in a real dark suit, dress shirt, tie, presidential sash when applicable — NOT costume, NOT superhero outfit, NOT fantasy attire). " +
+  "Style: unedited RAW press photograph, 35mm/50mm/85mm lens, natural available light, Reuters/AP/AFP/Getty photojournalism aesthetic, candid real-world moment, authentic environment (podium, office, press conference, motorcade, official ceremony as appropriate), 16K micro-detail on skin (pores, wrinkles, stubble where real), realistic eyes with the person's actual iris color. " +
+  "Absolutely no cartoon, no anime, no 3D render, no CGI, no illustration, no caricature, no stylization, no fantasy costume, no age alteration, no ethnicity alteration, no gender alteration — the output must be indistinguishable from a real photograph taken by a professional photojournalist.";
+
+// Cena natural/cinematográfica: humanos + biomas reais (Amazônia, deserto, savana, etc.)
+const NATURE_SCENE_RE = /\b(amaz[oô]nia|amazon|floresta|forest|selva|jungle|mata|deserto|desert|savana|savannah|savanna|cerrado|pantanal|caatinga|montanha|mountain|serra|vale|valley|c[âa]nion|canyon|praia|beach|costa|coast|ilha|island|rio|river|lago|lake|cachoeira|waterfall|caverna|cave|manguezal|mangrove|tundra|[aá]rtico|arctic|antartic[oa]|antarctic|savannah|natureza\s+intocada|untouched\s+nature|habitat\s+natural|ecossistema|ecosystem)\b/i;
+const CINEMATIC_NATURE =
+  "CINEMATIC NATURE SCENE (apply on top of realism): shoot as a single continuous cinematic frame in the style of Hollywood feature film and National Geographic documentary — 35mm or 50mm prime lens for characters, shallow depth of field with soft natural bokeh, volumetric natural sunlight filtering through the real ecosystem (correct trees, leaves, vines, humidity, light haze for depth), subtle mist and atmospheric perspective, 8K HDR, gentle natural color grading, real actors with authentic skin (light sweat, catchlights in the eyes, natural hair movement, real imperfections). Environment must match the real biome literally named by the user (Amazon rainforest, desert, savanna, mountain, coast, etc.) with scientifically accurate vegetation and wildlife. Any animals rendered must be real species with correct anatomy and natural colors — never fantasy or hybrid. Composition must read as a real frame from a live-action film, not an illustration or AI render.";
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  const _auth_res = await requireUser(req);
+  if (_auth_res instanceof Response) return _auth_res;
 
   try {
     const body = await req.json();
-    const { prompt, reference_image_base64, logo_base64 } = body || {};
+    const { prompt, reference_image_base64, logo_base64, style, title, subtitle, network, format, tone, case_type, provider } = body || {};
+    const preferProvider = (provider === "pollinations" || provider === "emergent") ? provider : "auto";
     if (!prompt || typeof prompt !== "string") {
       return new Response(JSON.stringify({ error: "Prompt obrigatório" }), {
         status: 400,
@@ -19,19 +458,101 @@ Deno.serve(async (req) => {
       });
     }
 
-    const fullPrompt = `Arte quadrada profissional para redes sociais de um escritório de advocacia brasileiro. Tema: ${prompt}. Visual elegante, jurídico, humano, sem texto, sem letras, sem marcas d'água.`;
+    const userElaborated = await elaboratePrompt(prompt, style);
+    const hybridSubject = hasHybridRequest(prompt);
+    const isolatedOnly = isIsolatedObjectOnly(prompt);
+    const eventSubject = !isolatedOnly && EVENT_RE.test(prompt) && !hybridSubject;
+    const scenerySubject = !hybridSubject && isScenerySubject(prompt);
+    const isPublicFigure = PUBLIC_FIGURE_RE.test(prompt);
+    const humanSubject = !isolatedOnly && (hasHumanSubject(prompt) || eventSubject || isPublicFigure) && !hybridSubject;
+    const handGuard = handCompositionGuard(prompt);
+    const cakeEating = EATING_CAKE_RE.test(prompt);
+    const fullPrompt = hybridSubject ? [
+      userElaborated,
+      "",
+      "SURREAL HYBRID MODE: render the requested object/fruit with the requested human facial features (eyes, nose, mouth, expression) seamlessly morphed INTO its natural surface. Keep the object's correct overall shape; do not add arms, legs, hands or fingers unless explicitly requested.",
+      "",
+      FACE_LOCK,
+      "",
+      FACE_REPAIR_LOCK,
+      "",
+      "Negative prompt: extra limbs, extra arms, extra legs, visible hands, fingers, body, torso, deformed face, asymmetric eyes, duplicated features, melted, warped, low quality, text, watermark, logo.",
+      "--style raw --photorealism high",
+    ].join("\n") : humanSubject ? [
+      userElaborated,
+      "",
+      `REALISM REQUIREMENTS: ${REALISM}`,
+      "",
+      isPublicFigure ? PUBLIC_FIGURE_REALISM : "",
+      "",
+      NATURE_SCENE_RE.test(prompt) ? CINEMATIC_NATURE : "",
+      FACE_LOCK,
+      "",
+      FACE_REPAIR_LOCK,
+      "",
+      ANATOMY_LOCK,
+      "",
+      cakeEating ? CAKE_EATING_LOCK : "",
+      "",
+      handGuard,
+      "",
+      HAND_LOCK,
+      "",
+      HAND_AVOIDANCE,
+      "",
+      `Negative prompt: ${NEG}, lopsided face, face merged with hair, face merged with clothing, face merged with object, duplicated face, two faces on one head, floating facial features, low-detail background faces, visible hands when not requested, visible fingers when not requested, bad hands, abnormal hands, deformed hands, distorted hands, malformed hands, mutated hands, extra fingers, missing fingers, fused fingers, webbed fingers, duplicated fingers, duplicate fingertips, extra nails, missing nails, broken fingers, bent-backwards fingers, claw hands, rubber fingers, long unnatural fingers, tiny hands, oversized hands, wrong thumb placement, detached hands, floating hands, hands growing from wrong place, baguette fingers, sausage fingers, displaced limbs, dislocated limbs, detached arms, detached legs, floating limbs, limbs in wrong place, arms attached to wrong body part, legs attached to wrong body part, twisted limbs, broken limbs, disjointed limbs, extra joints, missing joints, impossible pose, biomechanically wrong, body parts merging, limbs growing from torso, limbs growing from head, cake fused with fingers, frosting fused with skin, food merged with mouth, fork fused with hand, plate fused with body, dismembered, mangled body`,
+      "--style raw --no artificial --no smooth skin --no CGI --photorealism high --no visible_hands --no visible_fingers --no bad_hands --no deformed_hands --no extra_fingers --no missing_fingers --no fused_fingers --no displaced_limbs --no dislocated_limbs --no extra_limbs --no missing_limbs",
+    ].join("\n") : [
+      userElaborated,
+      "",
+      scenerySubject ? "SCENERY LOCK: render only the requested natural landscape/sky phenomenon. No humans, no faces, no eyes, no mouth, no portrait, no person silhouette, no anthropomorphic sun/clouds." : objectLockFor(prompt),
+      "",
+      scenerySubject
+        ? "Photorealistic natural landscape, faithful to the user's literal request, real sun/sky/clouds, warm atmospheric lighting, natural horizon, no anatomy, no portrait, no skin, no hands, no fingers, no face, no person, no human body parts."
+        : "Photorealistic non-human subject, faithful to the user's literal request, realistic material, correct natural form, clean silhouette, no anatomy, no portrait, no skin, no hands, no fingers, no face, no person, no human body parts, no fruit or food unless the user explicitly asked for it.",
+      `Negative prompt: person, people, human, face, portrait, facial features, eyes, mouth, skin, arm, hand, finger, nails, limb, body, body parts, holding, human-object hybrid, anthropomorphic, face in sun, face in clouds, mutated, melted, warped, deformed, duplicated parts, CGI, cartoon, illustration, text, watermark, logo, unrelated objects${FRUIT_RE.test(prompt) || scenerySubject ? "" : ", fruit, apple, banana, orange, food, produce, fruit basket"}.`,
+      "--style raw --photorealism high --no human --no face --no eyes --no portrait --no hands --no fingers --no skin --no body_parts --no anthropomorphic --no object_anatomy_fusion",
+    ].join("\n");
+
+    // Detecta se o assunto é animal/natureza vs objeto/produto para escolher o preset foto-realista.
+    const isAnimalSubject = !humanSubject && !hybridSubject && (
+      ANIMAL_RE.test(prompt) || !!detectBird(prompt) || !!detectMammal(prompt)
+    );
+    const ultraRealismBoost = humanSubject || hybridSubject
+      ? ""
+      : (isAnimalSubject || scenerySubject ? ULTRA_REALISM_NATURE : ULTRA_REALISM_OBJECT);
 
     const toDataUrl = (b64: string) =>
       b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`;
 
-    // With reference image and/or logo: Gemini Nano Banana
+    // Reforça fidelidade de objeto/espécie em TODOS os caminhos.
+    const fullPromptWithFidelity = `${fullPrompt}\n\n${OBJECT_FIDELITY_LOCK}${ultraRealismBoost ? `\n\n${ultraRealismBoost}` : ""}`;
+
+    const targetSize = pickSize(network, format);
+
+
+    // With reference image and/or logo: Gemini Nano Banana (edit-mode preserving identity)
     if (reference_image_base64 || logo_base64) {
       const imageUrls: string[] = [];
-      const promptParts: string[] = [fullPrompt];
+      const promptParts: string[] = [];
 
       if (reference_image_base64) {
         imageUrls.push(toDataUrl(reference_image_base64));
-        promptParts.push("Use a primeira imagem enviada como referência visual principal (mantenha tema, cores e elementos).");
+        promptParts.push(
+          `POSTER TEMPLATE EDIT MODE — the first uploaded image is the MASTER REFERENCE POSTER, not just inspiration.`,
+          `User request/new content to apply to that same poster: "${prompt}".`,
+          `Creative context: title="${title || ""}", subtitle="${subtitle || ""}", network="${network || ""}", format="${format || ""}", tone="${tone || ""}", case_type="${case_type || ""}".`,
+          title ? `Render the TITLE text exactly as: "${title}" in the same headline slot of the reference poster.` : "",
+          subtitle ? `Render the SUBTITLE text exactly as: "${subtitle}" in the secondary text slot of the reference poster.` : "",
+
+          `Recreate the SAME poster/template structure from the reference: same layout grid, margins, spacing, typography style, text hierarchy, color palette, decorative elements, badges, photo placement, background, lighting and overall visual identity.`,
+          `Replace ONLY the text/content requested by the user and only swap/add visual elements explicitly requested. Keep all other visual decisions from the reference poster.`,
+          `If the reference contains a person, preserve the same identity, face, hair, skin tone, clothing and proportions unless the user explicitly asks to change them.`,
+          `Do NOT generate a new unrelated post, do NOT use the reference as mood only, do NOT redesign the layout, do NOT change the palette, do NOT invent a different composition.`,
+          `Output must look like a direct edited/clone version of the uploaded poster with the requested changes applied. Text must be crisp, legible and correctly spelled in Brazilian Portuguese.`,
+        );
+      } else {
+        promptParts.push(fullPromptWithFidelity);
       }
       if (logo_base64) {
         imageUrls.push(toDataUrl(logo_base64));
@@ -41,6 +562,7 @@ Deno.serve(async (req) => {
       const result = await generateWithNanoBanana({
         prompt: promptParts.join("\n\n"),
         imageUrls,
+        preferProvider,
       });
 
       if (!result.url) {
@@ -54,8 +576,9 @@ Deno.serve(async (req) => {
       });
     }
 
+
     // Text-to-image: try Lovable Gateway gpt-image-2, fallback to Emergent (gpt-image-1).
-    const img = await generateImage({ prompt: fullPrompt, size: "1024x1024", quality: "low" });
+    const img = await generateImage({ prompt: fullPromptWithFidelity, size: targetSize, quality: "high", preferProvider });
     if (!img.ok) {
       // Local SVG fallback so the client never sees a 502 / blank screen.
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#4338ca"/></linearGradient></defs><rect width="1024" height="1024" fill="url(#g)"/><circle cx="512" cy="420" r="160" fill="rgba(255,255,255,0.08)"/><rect x="312" y="640" width="400" height="14" rx="7" fill="rgba(255,255,255,0.35)"/><rect x="372" y="680" width="280" height="10" rx="5" fill="rgba(255,255,255,0.22)"/></svg>`;

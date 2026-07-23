@@ -2,6 +2,7 @@ import { registerAiBuilderRoutes } from "./ai-builder-handler.js";
 // Backend mínimo para WhatsApp via Baileys.
 // Deploy no Render como Web Service: Build `npm install`, Start `npm start`.
 // Endpoints expostos sob /api/* para casar com o frontend (VITE_BACKEND_URL).
+console.log("[kenia-backend] Module loaded at", new Date().toISOString());
 
 import express from "express";
 import cors from "cors";
@@ -19,12 +20,12 @@ import {
   downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 
-const SUPABASE_URL = process.env.SUPABASE_URL || "https://wfycqufqdheluvzhgvfw.supabase.co";
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://uzzbgjwpfxokagrvmdoa.supabase.co";
 const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJIUzI1NiIsInJlZiI6Imt6bHh5c3h2dmx1cGp0cm14cW1iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTM3MDUsImV4cCI6MjA5MjQ2OTcwNX0.iU5enYnsJExOHtbwpJKQ4bMGZS8hzQIURi6T2y2EQVM";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6emJnandwZnhva2FncnZtZG9hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNDk2NzgsImV4cCI6MjA5OTgyNTY3OH0.4lX8OydcmKTx_U2A0MvMCs1-ZBKpQUcKFjSFsNfBttc";
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const SUPABASE_DB_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 const supabaseDb = SUPABASE_URL && SUPABASE_DB_KEY
@@ -69,6 +70,290 @@ async function transcribeAudioBuffer(buffer, mimetype = "audio/ogg") {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(`transcribe ${resp.status}: ${JSON.stringify(data)}`);
   return data.text || data.transcript || "";
+}
+
+// ---- Funções para fluxo Advogado → Juiz Virtual ----
+
+// Mapeamento de nomes de área do chat-ai para chaves internas
+const AREA_NAME_MAP = {
+  "direito penal": "penal", "penal": "penal", "criminal": "penal",
+  "direito civil": "civel", "cível": "civel", "civil": "civel", "direito bancário": "civel", "bancário": "civel",
+  "direito do trabalho": "trabalhista", "trabalhista": "trabalhista", "direito trabalhista": "trabalhista",
+  "direito de família": "familia", "família": "familia", "familia": "familia",
+  "direito previdenciário": "previdenciario", "previdenciário": "previdenciario", "previdenciario": "previdenciario", "inss": "previdenciario",
+  "direito tributário": "tributario", "tributário": "tributario", "tributario": "tributario", "fiscal": "tributario",
+  "direito administrativo": "administrativo", "administrativo": "administrativo",
+  "direito constitucional": "constitucional", "constitucional": "constitucional",
+  "direito empresarial": "empresarial", "empresarial": "empresarial", "societário": "empresarial",
+  "direito do consumidor": "consumidor", "consumidor": "consumidor",
+  "direito ambiental": "ambiental", "ambiental": "ambiental",
+  "direito eleitoral": "eleitoral", "eleitoral": "eleitoral",
+  "direito internacional": "internacional", "internacional": "internacional",
+  "direito sucessório": "sucessoes", "sucessões": "sucessoes", "sucessoes": "sucessoes", "inventário": "sucessoes",
+};
+
+const AREA_KEYWORDS = {
+  penal: /\b(preso|flagrante|criminal|delegacia|delegado|furto|roubo|estelionato|tráfico|homicídio|lesão|ameaça|injúria|calúnia|difamação|crime|víctima|denúncia|inquérito|prisão|medida cautelar|habeas corpus|defesa criminal|advogado criminal|pena|condenação)\b/i,
+  sucessoes: /\b(inventário|herança|herdeiro|testamento|doação|colação|legítima|disponível|meação|partilha|sucessão|causa mortis)\b/i,
+  familia: /\b(divórcio|guarda|filhos|pensão alimentícia|união estável|casamento|separação|filho|mulher|marido|companheiro|genitor|pai|mãe|paternidade|maternidade|pátrio poder|regime de bens|nascimento|óbito|família)\b/i,
+  consumidor: /\b(consumidor|fornecedor|CDC|produto|serviço|vício|fato|garantia|nota fiscal|troca|reembolso|cobrança indevida|publicidade enganosa|cláusula abusiva|negativação)\b/i,
+  civel: /\b(indenização|danos morais|materiais|contrato|cobrança|dívida|propriedade|imóvel|vizinho|obrigação|responsabilidade civil|prescrição|decadência|tutela|liminar|ação civil|reparação)\b/i,
+  trabalhista: /\b(emprego|trabalhador|empregado|carteira|CLT|salário|horas extras|férias|13º|FGTS|rescisão|aviso prévio|justa causa|demissão|assédio|insalubridade|periculosidade|noturno|adicional|reclamação trabalhista|equiparação|patrão|chefe)\b/i,
+  previdenciario: /\b(INSS|aposentadoria|benefício|auxílio-doença|auxílio-acidente|pensão por morte|CNIS|tempo de contribuição|incapacidade|perícia|B31|B32|LOAS|salário-maternidade|EC 103|pedágio|reforma previdenciária)\b/i,
+  tributario: /\b(ICMS|ISS|IR|IPI|IPTU|IPVA|IOF|imposto|tributo|multa|fiscal|auto de infração|execução fiscal|Simples|certidão negativa|dívida ativa|lançamento tributário)\b/i,
+  administrativo: /\b(servidor público|concurso|estabilidade|aposentadoria compulsória|processo disciplinar|improbidade|mandado de segurança|licitação|decreto|portaria|diário oficial)\b/i,
+  constitucional: /\b(direito fundamental|CF|88|constituição|habeas data|ação popular|ADI|ADC|ADPF|STF|direitos e garantias|princípio|dignidade)\b/i,
+  empresarial: /\b(sócio|empresa|CNPJ|contrato social|dissolução|falência|recuperação|dívida societária|quotas|capital social|balanço|contabilidade|marca|patente)\b/i,
+  ambiental: /\b(licença ambiental|multa ambiental|embargo|APP|reserva legal|poluição|contaminação|deflorestamento|árvore|ICMBio|orgão ambiental|passivo ambiental)\b/i,
+  eleitoral: /\b(candidato|eleição|voto|propaganda|ficha limpa|inelegibilidade|doação|prestação de contas|TRE|TSE|cassação|mandato|urna)\b/i,
+  internacional: /\b(extradição|tratado|internacional|estrangeiro|sentença estrangeira|homologação|arbitragem|cooperação|imunidade diplomática|ONU|OEA)\b/i,
+};
+
+function detectArea(text) {
+  const combined = String(text || "").toLowerCase().trim();
+  // 1) Tentar mapeamento direto de nomes de área (chat-ai retorna "Direito de Família", etc.)
+  for (const [name, key] of Object.entries(AREA_NAME_MAP)) {
+    if (combined.includes(name)) return key;
+  }
+  // 2) Tentar匹配 por palavras-chave
+  for (const [area, regex] of Object.entries(AREA_KEYWORDS)) {
+    if (regex.test(combined)) return area;
+  }
+  return null;
+}
+
+// Rate limiting: cooldown de 30s por JID para evitar triggers duplicados
+const lawyerJudgeCooldown = new Map(); // jid -> timestamp
+const LAWYER_JUDGE_COOLDOWN_MS = 30000;
+
+function canTriggerLawyerJudge(jid) {
+  const last = lawyerJudgeCooldown.get(jid) || 0;
+  if (Date.now() - last < LAWYER_JUDGE_COOLDOWN_MS) return false;
+  lawyerJudgeCooldown.set(jid, Date.now());
+  return true;
+}
+
+async function callLawyerAiFunction({ message, history = [], area, model = "claude-sonnet-4-5", clientData = {}, mediaUrls = [] }) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("lawyer-ai indisponível");
+  const allMessages = [...history, { role: "user", content: message }];
+  const resp = await fetch(`${SUPABASE_URL}/functions/v1/lawyer-ai`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ messages: allMessages, model, area, client_data: clientData, media_urls: mediaUrls }),
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`lawyer-ai ${resp.status}: ${errText}`);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let parseErrors = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const data = line.slice(6);
+        if (data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed?.choices?.[0]?.delta?.content;
+          if (delta) fullText += delta;
+        } catch {
+          parseErrors++;
+          if (parseErrors <= 3) console.error("[lawyer-ai] SSE parse error:", data.slice(0, 100));
+        }
+      }
+    }
+  }
+  if (!fullText) console.error("[lawyer-ai] Resposta vazia do modelo", model);
+  return { response: fullText, model: resp.headers.get("X-Lawyer-Model") || model };
+}
+
+async function callJudgeAiForOpinion({ caseText, area, model = "claude-sonnet-4-5" }) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("judge-ai indisponível");
+  const resp = await fetch(`${SUPABASE_URL}/functions/v1/judge-ai`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      apikey: SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ case: caseText, model, area }),
+  });
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`judge-ai ${resp.status}: ${errText}`);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let fullText = "";
+  let parseErrors = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    for (const line of chunk.split("\n")) {
+      if (line.startsWith("data: ")) {
+        const data = line.slice(6);
+        if (data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed?.choices?.[0]?.delta?.content;
+          if (delta) fullText += delta;
+        } catch {
+          parseErrors++;
+          if (parseErrors <= 3) console.error("[judge-ai] SSE parse error:", data.slice(0, 100));
+        }
+      }
+    }
+  }
+  if (!fullText) console.error("[judge-ai] Resposta vazia do modelo", model);
+  return { opinion: fullText, model: resp.headers.get("X-Judge-Model") || model, confidence: extractConfidence(fullText) };
+}
+
+function extractConfidence(text) {
+  const match = String(text).match(/(?:grau\s+de\s+confiança|confiança)[:\s]*\*?\*?(Muito\s+Alto|Alto|Médio|Baixo|Muito\s+Baixo)/i);
+  return match ? match[1] : "Não avaliado";
+}
+
+async function saveCaseOpinion({ sessionId, visitorName, visitorPhone, area, conversation, lawyerAnalysis, lawyerName, lawyerArea, judgeOpinion, judgeModel, judgeConfidence, mediaUrls, mediaTypes, clientData }) {
+  if (!supabaseDb) return;
+  try {
+    const id = `opinion-${sessionId}-${Date.now()}`;
+    const { error } = await supabaseDb.from("case_opinions").insert({
+      id,
+      session_id: sessionId,
+      visitor_name: visitorName || "Cliente",
+      visitor_phone: visitorPhone || "",
+      area: area || "Geral",
+      client_data: clientData || {},
+      conversation: conversation || [],
+      lawyer_analysis: lawyerAnalysis || {},
+      lawyer_name: lawyerName || "",
+      lawyer_area: lawyerArea || area || "",
+      judge_opinion: judgeOpinion || "",
+      judge_model: judgeModel || "",
+      judge_area: area || "",
+      judge_confidence: judgeConfidence || "",
+      judge_references: [],
+      media_urls: mediaUrls || [],
+      media_types: mediaTypes || [],
+      status: judgeOpinion ? "parecer_pronto" : "analise_advogado",
+      priority: "normal",
+      judge_opinion_at: judgeOpinion ? new Date().toISOString() : null,
+    });
+    if (error) console.error("[saveCaseOpinion] error:", error);
+    else console.log("[saveCaseOpinion] saved id=", id);
+  } catch (e) {
+    console.error("[saveCaseOpinion] exception:", e?.message || e);
+  }
+}
+
+async function triggerLawyerAndJudge({ jid, userText, contactName, history, analysis, mediaUrls = [] }) {
+  try {
+    const phone = jidToPhone(jid);
+
+    // Rate limiting: evitar triggers duplicados em 30s
+    if (!canTriggerLawyerJudge(jid)) {
+      console.log("[triggerLawyer] Cooldown ativo para", jid, "— pulando");
+      return;
+    }
+
+    // Área: tentar nome do chat-ai + texto do cliente + análise
+    const searchText = [
+      analysis?.area,
+      analysis?.area_name,
+      analysis?.areaName,
+      userText,
+    ].filter(Boolean).join(" ");
+    const area = detectArea(searchText);
+    if (!area) {
+      console.log("[triggerLawyer] Área não detectada, pulando. Texto:", String(userText).slice(0, 80));
+      return;
+    }
+    console.log(`[triggerLawyer] Área detectada: ${area}, acionando advogado especializado`);
+
+    // Montar contexto do caso
+    const caseContext = [
+      `CLIENTE: ${contactName || "Cliente"}`,
+      `TELEFONE: ${phone}`,
+      `ÁREA: ${area}`,
+      mediaUrls?.length ? `MÍDIAS: ${mediaUrls.join(", ")}` : null,
+      analysis ? `ANÁLISE PRELIMINAR: ${JSON.stringify(analysis)}` : null,
+      "",
+      "HISTÓRICO DA CONVERSA:",
+      ...history.map(m => `${m.role === "user" ? "CLIENTE" : "SECRETÁRIA"}: ${m.content}`),
+      "",
+      `ÚLTIMA MENSAGEM DO CLIENTE: ${userText}`,
+    ].filter(Boolean).join("\n");
+
+    // Chamar advogado especializado
+    const lawyerResult = await callLawyerAiFunction({
+      message: caseContext,
+      history: [],
+      area,
+      model: "claude-sonnet-4-5",
+      clientData: analysis || {},
+      mediaUrls,
+    });
+
+    const lawyerResponse = lawyerResult.response || "";
+    console.log("[triggerLawyer] Advogado respondeu, tamanho:", lawyerResponse.length);
+
+    // Verificar se o caso está pronto para o juiz
+    // Critérios: marcador explícito OU 3+ turnos E advogado indicou análise completa
+    const hasExplicitMarker = /caso_pronto_para_juiz|encaminhar_para_juiz.*true|análise_completa/i.test(lawyerResponse);
+    const hasEnoughTurns = history.length >= 6;
+    const lawyerIndicatesComplete = /análise completa|parecer completo|está pronto|encaminh|analisad|devidamente analisad/i.test(lawyerResponse);
+    const readyForJudge = hasExplicitMarker || (hasEnoughTurns && lawyerIndicatesComplete);
+
+    let judgeOpinion = "";
+    let judgeModel = "";
+    let judgeConfidence = "";
+
+    if (readyForJudge) {
+      console.log("[triggerLawyer] Caso pronto para juiz:", { hasExplicitMarker, hasEnoughTurns, lawyerIndicatesComplete });
+      const judgeResult = await callJudgeAiForOpinion({
+        caseText: `${caseContext}\n\nANÁLISE DO ADVOGADO:\n${lawyerResponse}`,
+        area,
+        model: "claude-sonnet-4-5",
+      });
+      judgeOpinion = judgeResult.opinion || "";
+      judgeModel = judgeResult.model || "";
+      judgeConfidence = judgeResult.confidence || "";
+      console.log("[triggerJudge] Juiz respondeu, tamanho:", judgeOpinion.length);
+    }
+
+    // Salvar parecer
+    await saveCaseOpinion({
+      sessionId: phone,
+      visitorName: contactName || "Cliente",
+      visitorPhone: phone,
+      area,
+      conversation: history,
+      lawyerAnalysis: { response: lawyerResponse, area, readyForJudge },
+      lawyerName: `Advogado Virtual — ${area}`,
+      lawyerArea: area,
+      judgeOpinion,
+      judgeModel,
+      judgeConfidence,
+      mediaUrls: mediaUrls || [],
+      mediaTypes: [],
+      clientData: analysis || {},
+    });
+
+    // Parecer do juiz é salvo no banco (case_opinions) mas NÃO é enviado ao cliente.
+    // O cliente recebe apenas a resposta da secretária (chat-ai) normalmente.
+  } catch (e) {
+    console.error("[triggerLawyerAndJudge] error:", e?.message || e);
+  }
 }
 
 // ---- Ponte para Ollama (via ngrok) usada pelo bot do Baileys ----
@@ -249,12 +534,14 @@ function startOllamaKeepAlive() {
 const PORT = Number(process.env.PORT) || 8080;
 const AUTH_DIR = process.env.AUTH_DIR || "./auth";
 const QR_TIMEOUT_MS = Number(process.env.QR_TIMEOUT_MS || 900000);
-const QR_RENEW_AFTER_MS = Number(process.env.QR_RENEW_AFTER_MS || 240000);
-const QR_ENSURE_COOLDOWN_MS = Number(process.env.QR_ENSURE_COOLDOWN_MS || 6000);
+const QR_RENEW_AFTER_MS = Number(process.env.QR_RENEW_AFTER_MS || 30000);
+const QR_ENSURE_COOLDOWN_MS = Number(process.env.QR_ENSURE_COOLDOWN_MS || 10000);
 const CONNECT_TIMEOUT_MS = Number(process.env.CONNECT_TIMEOUT_MS || 120000);
-const KEEP_ALIVE_INTERVAL_MS = Number(process.env.KEEP_ALIVE_INTERVAL_MS || 15000);
-const RECONNECT_DELAY_MS = Number(process.env.RECONNECT_DELAY_MS || 2000);
+const KEEP_ALIVE_INTERVAL_MS = Number(process.env.KEEP_ALIVE_INTERVAL_MS || 10000);
+const RECONNECT_DELAY_MS = Number(process.env.RECONNECT_DELAY_MS || 3000);
 const RECONNECT_MAX_DELAY_MS = Number(process.env.RECONNECT_MAX_DELAY_MS || 300000);
+const MAX_RECONNECT_ATTEMPTS = Number(process.env.MAX_RECONNECT_ATTEMPTS || 50);
+const MAX_AUTH_DELETIONS = 3;
 const SERVER_STARTED_AT = Date.now();
 const AUTO_REPLY_RECENT_WINDOW_MS = Number(process.env.AUTO_REPLY_RECENT_WINDOW_MS || 180000);
 const logger = pino({ level: "warn" });
@@ -276,6 +563,8 @@ let reconnectingSince = null;
 let lastOpenAt = null;
 let lastDisconnectCode = null;
 let manualLogoutRequested = false;
+let authDeletions = 0;
+let startSockLock = false;
 let whatsappConfig = { provider: "baileys", bot_enabled: true };
 let qrEnsurePromise = null;
 let lastQrEnsureAt = 0;
@@ -349,13 +638,13 @@ const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 90000)
 const AUTO_REPLY_SEND_TIMEOUT_MS = Number(process.env.AUTO_REPLY_SEND_TIMEOUT_MS || 20000);
 const AUTO_REPLY_RETRY_EVERY_MS = Number(process.env.AUTO_REPLY_RETRY_EVERY_MS || 10000);
 const AUTO_REPLY_QUEUE_MAX = Number(process.env.AUTO_REPLY_QUEUE_MAX || 50);
-const SECRETARY_SYSTEM_PROMPT = `# SECRETÁRIA JURÍDICA DA DRA. KÊNIA GARCIA — TREINAMENTO AVANÇADO v2.0
+const SECRETARY_SYSTEM_PROMPT = `# SECRETÁRIA JURÍDICA DA DRA. KÊNIA GARCIA
 
 Você é a secretária pessoal da Dra. Kênia Garcia e realiza atendimento pelo WhatsApp.
 
-Sua função é acolher clientes, realizar triagem jurídica avançada, esclarecer dúvidas iniciais com fundamentação legal, coletar informações relevantes, organizar documentos, gerenciar agendamentos, aplicar estratégias de fechamento e acompanhar o cliente durante todo o atendimento.
+Sua função é acolher clientes, realizar triagem jurídica, esclarecer dúvidas iniciais, coletar informações relevantes, organizar documentos, gerenciar agendamentos e acompanhar o cliente durante todo o atendimento.
 
-Seu comportamento deve ser indistinguível do de uma secretária jurídica humana experiente, com conhecimento profundo de legislação e jurisprudência brasileira.
+Seu comportamento deve ser indistinguível do de uma secretária humana experiente.
 
 ---
 
@@ -420,75 +709,10 @@ Trate todas as informações do cliente com sigilo, discrição e profissionalis
 Quando o cliente trouxer uma dúvida ou problema jurídico:
 - Identifique a área do Direito, fatos principais, datas, cidade/estado, documentos existentes, prazos, audiências/intimações e objetivo do cliente.
 - Se faltar informação essencial, pergunte antes de concluir.
-- Oriente de forma geral, clara e prudente, citando leis ou artigos quando souber com segurança.
-- Nunca invente leis, jurisprudência, números de processo, súmulas ou decisões.
-- Nunca prometa resultado, prazo judicial ou êxito.
-- Quando o caso exigir análise aprofundada, ofereça encaminhar ou agendar consulta com a Dra. Kênia Garcia.
-
-Use como referência de abordagem ferramentas jurídicas brasileiras como JusAI, Lexias, JusExpertia, LEIA Solutions e LexValia: pesquisa legal cuidadosa, linguagem acessível, organização de fatos, análise preliminar e indicação de próximos passos sem substituir a análise da advogada.
-
----
-
-# TREINAMENTO JURÍDICO AVANÇADO — CONHECIMENTO POR ÁREA
-
-## Direito de Família e Sucessões
-- **Divórcio**: EC 66/2010 (direito potestativo), Lei 11.441/2007 (extrajudicial em cartório quando consensual, sem filhos menores/incapazes e sem nascituro), arts. 1.571 a 1.582 do CC
-- **Guarda**: art. 1.583 do CC (compartilhada é regra), ECA art. 17, melhor interesse da criança
-- **Pensão Alimentícia**: Lei 5.478/68, art. 1.696 do CC, alimentos provisionais, alimentos gravídicos
-- **Inventário**: Lei 11.441/2007, inventário extrajudicial, partilha consensual, custas mais baixas
-- **União Estável**: art. 1.723 do CC, reconhecimento, dissolução, conversão em casamento
-- **Planejamento Sucessório**: testamento (Lei 10.406/02 arts. 1.845-1.850), doação, holding familiar
-
-## Direito Bancário
-- **Revisão de Contratos**: CDC art. 6º, IV (cláusulas abusivas), STJ Súmula 381
-- **Negativação Indevida**: CDC art. 43, Lei 12.414/2011 (SPC/Serasa), direito ao cadastro positivo
-- **Superendividamento**: Lei 14.181/2021, plano de pagamento, negociação obrigatória, microcrédito
-- **Repetição de Indébito**: CDC art. 42, Súmula 346/STJ, prescricional 5 anos
-- **Fraudes Bancárias**: consignados não autorizados, responsabilidade solidária do banco
-
-## Direito Previdenciário
-- **Aposentadoria**: EC 103/2019 (regra de transição), tempo de contribuição, idade mínima
-- **Auxílio-Doença/BPC**: Lei 8.213/91, incapacidade temporária, LOAS Lei 8.742/93
-- **Pensão por Morte**: Lei 8.213/91 arts. 74-79, dependência econômica, compartilhamento
-- **Revisão de Benefício**: erro material, tempo de contribuição, RMA, DIB, DER
-
-## Direito do Consumidor
-- **Código de Defesa do Consumidor**: Lei 8.078/90, direitos básicos art. 6º
-- **Práticas Abusivas**: art. 39, cláusulas abusivas art. 51, inversão do ônus da prova
-- **Responsabilidade Civil**: art. 14, vício do produto art. 18, responsabilidade objetiva
-
-## Direito Trabalhista
-- **CLT**: princípios protetivos, contrato de trabalho, rescisão
-- **Rescisão**: FGTS + 40%, aviso prévio proporcional (Lei 12.506/2011), férias + 1/3
-- **Horas Extras**: Súmula 85 TST, banco de horas judicial, adicional mínimo 50%
-
----
-
-# ESTRATÉGIAS DE FECHAMENTO — CICLO SECRETÁRIA → ADVOGADA
-
-## Quando Fechar o Atendimento
-O atendimento é um ciclo: a secretária acolhe, coleta dados, orienta inicialmente e direciona para a advogada. Fechar significa converter o atendimento em consulta agendada com a Dra. Kênia Garcia.
-
-### Sinais de Interesse do Cliente (momento de fechar)
-- Pergunta sobre valores/honorários: "Quanto custa?"
-- Pergunta sobre prazos: "Quanto tempo demora?"
-- Menciona urgência: "Preciso resolver rápido", "Estou desesperado"
-- Pergunta sobre acompanhamento: "Como funciona o processo?"
-- Menciona concorrência: "Outro advogado disse que..."
-- Expressa confiança: "Vocês parecem bons", "Quero contratar"
-- Faz perguntas detalhadas sobre o caso
-
-### Técnicas de Fechamento
-1. **Resumo de Viabilidade**: "Com base no que me contou, há possibilidade real de êxito. Para analisar com profundidade, precisamos de uma consulta."
-2. **Urgência Controlada**: "Esse prazo é importante — quanto antes agirmos, melhores as chances. Que tal agendarmos para esta semana?"
-3. **Prova Social**: "Trabalhamos muito com casos assim e conseguimos bons resultados. Vou te mostrar como funciona na consulta."
-4. **Próximo Passo Claro**: "Para darmos andamento, preciso que você me envie esses documentos e agendemos uma análise."
-5. **Agendamento Natural**: "Que tal marcarmos uma consulta para analisarmos juntos? Tenho horário terça às 14h ou quarta às 10h."
-
-### Frases de Fechamento
-- "Para gente poder analisar seus documentos com calma e traçar a melhor estratégia, que tal marcarmos uma consulta?"
-- "Com essas informações, já posso adiantar que temos caminhos. A Dra. Kênia pode detalhar na consulta."
-- "Vou agendar para você não perder prazo. Me confirma seu nome completo e WhatsApp?"
+- NUNCA dê parecer jurídico definitivo. NUNCA prometa resultado. NUNCA informe valores de indenização. NUNCA diga se o cliente "tem direito" ou "não tem direito".
+- NUNCA liste requisitos legais detalhados (ex.: "mulher 62 + 15 anos de contribuição"). Em vez disso, PERGUNTE dados do cliente para coletar informações.
+- Em vez de dar análise jurídica, colete informações e agende: "Entendi, [nome]. Para eu entender melhor, me conta: [pergunta específica]".
+- Quando o caso exigir análise aprofundada, SEMPRE ofereça agendamento com a Dra. Kênia Garcia — NUNCA envie parecer jurídico ao cliente.
 
 ## INFORMAÇÕES DO ESCRITÓRIO E DA DRA. KÊNIA GARCIA
 - Dra. Kênia Garcia atua há mais de 15 anos no mercado jurídico, com atendimento humanizado, fé, compaixão, dignidade, respeito e empatia.
@@ -713,6 +937,104 @@ Sempre siga esta ordem ao decidir a resposta:
 - Não invente jurisprudência nem números de processo. Se não tiver segurança sobre detalhe específico, diga e encaminhe.
 - Em situações urgentes (violência, prazo processual, prisão), oriente o procedimento imediato e priorize o contato com a Dra. Kênia.
 
+---
+
+# CAPTAÇÃO DE CLIENTES — ESTRATÉGIAS DE MARKETING E CONVERSÃO
+
+## Identificação de Leads de Alta Conversão
+
+Detecte automaticamente oportunidades de captação quando o cliente mencionar:
+- Termos jurídicos específicos: "divórcio", "separação", "pensão", "inventário", "herança", "guarda", "alimentos"
+- Situações de urgência: "fui demitido", "me ameaçaram", "preciso de ajuda urgente", "tenho prazo"
+- Indicações: "me indicaram", "um amigo me falou", "vi na internet"
+- Busca por orientação: "quero saber se tenho direito", "como funciona", "quais são meus direitos"
+
+## Técnicas de Conversão
+
+### Escuta Ativa com Perguntas Estratégicas
+Em vez de dar respostas completas, colete informações que levem ao agendamento:
+- ERRADO: "O divórcio consensual pode ser feito em cartório se não houver filhos menores."
+- CERTO: "Entendi sobre o divórcio. Para eu entender melhor sua situação, me conta: vocês já conversaram sobre isso? Há filhos menores envolvidos?"
+
+### Criação de Urgência (Ética)
+- "Esse tipo de situação tem prazos importantes. Quer que eu verifique a agenda da Dra. Kênia para tratar isso com prioridade?"
+- "Para evitar complicações futuras, é importante agir o quanto antes. Posso agendar uma consulta rápida?"
+
+### Tratamento de Objeções
+- "Não tenho dinheiro" → "Entendo. A Dra. Kênia oferece consulta inicial para avaliar a viabilidade do seu caso sem compromisso."
+- "Vou pensar" → "Claro! Posso te enviar os dados de contato para quando decidir? Enquanto isso, se tiver alguma dúvida, é só me chamar."
+- "Já tenho advogado" → "Ótimo! Se precisar de uma segunda opinião ou tiver dúvidas, estamos à disposição."
+- "É muito complicado" → "Sei que parece difícil, mas cada caso tem uma solução. Quer que eu explique o passo a passo?"
+- "Não sei se tenho direito" → "Essa é justamente a pergunta que a Dra. Kênia pode responder na consulta. Quer agendar?"
+
+## Gatilhos Psicológicos para Conversão
+
+### Princípio da Reciprocidade
+- Ofereça algo de valor primeiro (orientação, informações)
+- O cliente se sentirá mais inclinado a retribuir (agendar)
+
+### Prova Social
+- "Muitos clientes na sua situação encontraram solução com a Dra. Kênia"
+- "O escritório atende clientes em todo o Brasil"
+
+### Escassez (Ética)
+- "A Dra. Kênia tem agenda limitada esta semana"
+- "Esse tipo de caso tem prazos importantes para cumprir"
+
+### Autoridade
+- "Dra. Kênia Garcia atua há mais de 15 anos no mercado jurídico"
+- "Áreas de atuação: Família e Sucessões, Previdenciário, Bancário"
+
+### Afinidade
+- Use o nome do cliente
+- Demonstre empatia genuína
+- Conecte-se emocionalmente com o caso
+
+## Scripts para Situações Comuns
+
+### Lead com Interesse em Divórcio
+"Entendi, [nome]. Situações como essa são delicadas e merecem atenção cuidadosa. Para eu entender melhor: vocês já conversaram sobre como querem resolver? Há filhos menores envolvidos? Qual o regime de bens do casamento?"
+
+### Lead com Interesse em Aposentadoria
+"Entendo, [nome]. Questões previdenciárias podem ser complexas. Para eu orientar melhor: qual é a sua situação atual? Está trabalhando, já contribuiu algum tempo para o INSS?"
+
+### Lead com Interesse em Direito Bancário
+"Entendi, [nome]. Problemas com instituições financeiras são mais comuns do que parece. Para eu entender sua situação: qual é o problema específico? Já tentou resolver diretamente com o banco?"
+
+### Lead Hesitante
+"Sem pressa, [nome]. Cada pessoa tem seu tempo. Enquanto isso, se tiver alguma dúvida, pode me chamar. Estou aqui para ajudar quando você precisar."
+
+### Lead com Urgência
+"Entendo a urgência, [nome]. Vamos verificar a agenda da Dra. Kênia para atender o mais rápido possível. Qual dia e horário seriam mais convenientes para você?"
+
+### Após Responder Dúvida Jurídica
+"Essa é a orientação inicial baseada na legislação. Para analisar seu caso com profundidade e verificar as melhores estratégias, a Dra. Kênia pode fazer uma avaliação completa. Quer agendar?"
+
+## Fluxo de Conversão
+
+### Fluxo Ideal
+Lead chega → Saudação → Identificação da necessidade → Coleta de dados → Agendamento → Confirmação
+
+### Coleta de Informações Essenciais
+Pergunte progressivamente (não tudo de uma vez):
+1. Nome do cliente
+2. Área jurídica do interesse
+3. Situação/resumo do caso
+4. Contato (telefone/e-mail)
+5. Cidade/estado
+
+### Para Leads que Não Agendam Imediatamente
+- Ofereça alternativas: "Sem problemas! Posso te enviar as informações por aqui mesmo."
+- Nutrição de lead: Ofereça informações úteis sobre o caso
+- Follow-up ativo: "Oi, tudo bem? Vim verificar se teve alguma atualização no seu caso."
+
+## Indicação Estruturada
+Quando um cliente indicar outro:
+- Registre a indicação no sistema
+- Priorize o atendimento
+- Agradeça a indicação formalmente
+- Mantenha o cliente informado sobre o novo lead
+
 ## FONTES JURÍDICAS DE REFERÊNCIA
 Use mentalmente, como base de conhecimento, as seguintes fontes oficiais e complementares (cite quando agregar valor; nunca invente links nem números de acórdão):
 - Legislação oficial: Portal da Legislação (planalto.gov.br) — CF, Código Civil, Código Penal, CPC, CPP, CLT, CDC, ECA, leis federais, MPs e decretos.
@@ -757,6 +1079,7 @@ Resposta final em português do Brasil:`;
 const AI_SYSTEM_PROMPT = SECRETARY_SYSTEM_PROMPT;
 
 const aiHistory = new Map(); // jid -> [{role, content}]
+const recentMediaUrls = new Map(); // jid -> [{url, type, caption, timestamp}] (últimas 5 mídias)
 const AI_HISTORY_LIMIT = Number(process.env.AI_HISTORY_LIMIT || 8);
 
 function trimAiHistory(history, limit = AI_HISTORY_LIMIT) {
@@ -806,6 +1129,56 @@ async function persistAiTurn(jid, userText, reply) {
     recordAutoReply({ step: "history_persisted", jid });
   } catch (e) {
     recordAutoReply({ step: "history_persist_error", jid, error: e?.message || String(e) });
+  }
+}
+
+async function saveWhatsAppMedia({ jid, phone, name, mediaType, caption, buffer, mimetype, filename }) {
+  if (!supabaseDb || !buffer || !buffer.length) return null;
+  try {
+    const ext = (mimetype || "").includes("pdf") ? "pdf"
+      : (mimetype || "").includes("png") ? "png"
+      : (mimetype || "").includes("jpeg") || (mimetype || "").includes("jpg") ? "jpg"
+      : (mimetype || "").includes("video") ? "mp4"
+      : (mimetype || "").includes("webp") ? "webp"
+      : (mimetype || "").includes("gif") ? "gif"
+      : (mimetype || "").includes("opus") ? "ogg"
+      : "bin";
+    const safePhone = (phone || jid || "unknown").replace(/[^0-9+]/g, "");
+    const ts = Date.now();
+    const storagePath = `${safePhone}/${ts}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const BUCKET = "whatsapp-media";
+    // Ensure bucket exists
+    const { data: buckets } = await supabaseDb.storage.listBuckets();
+    const bucketExists = buckets?.some(b => b.name === BUCKET);
+    if (!bucketExists) {
+      await supabaseDb.storage.createBucket(BUCKET, { public: false });
+    }
+    const { error: uploadErr } = await supabaseDb.storage.from(BUCKET).upload(storagePath, buffer, {
+      contentType: mimetype || "application/octet-stream",
+      upsert: false,
+    });
+    if (uploadErr) throw uploadErr;
+    const { data: urlData } = await supabaseDb.storage.from(BUCKET).createSignedUrl(storagePath, 365 * 24 * 3600);
+    const signedUrl = urlData?.signedUrl || null;
+    const { data: row, error: dbErr } = await supabaseDb.from("whatsapp_media").insert({
+      user_id: null,
+      jid,
+      phone: safePhone,
+      contact_name: name || null,
+      media_type: mediaType,
+      caption: caption || null,
+      storage_path: storagePath,
+      signed_url: signedUrl,
+      mimetype: mimetype || null,
+      filename: filename || null,
+      file_size: buffer.length,
+    }).select().single();
+    if (dbErr) throw dbErr;
+    console.log(`[media] Saved ${mediaType} from ${safePhone}: ${storagePath} (${buffer.length} bytes)`);
+    return row;
+  } catch (e) {
+    console.error("[media] Error saving:", e?.message || e);
+    return null;
   }
 }
 
@@ -1008,6 +1381,37 @@ function removeTemporalLeaks(reply, userText) {
     .trim();
 }
 
+function removeUserEcho(reply, userMessage) {
+  const userNorm = normalizeForSimilarity(userMessage);
+  if (!userNorm || userNorm.split(" ").length < 3) return reply;
+  const parts = String(reply || "").split(/(?<=[.!?\n])\s+/);
+  const kept = parts.filter((part) => {
+    const partNorm = normalizeForSimilarity(part);
+    if (!partNorm) return true;
+    if (partNorm === userNorm) return false;
+    if (partNorm.length >= 10 && similarityScore(part, userMessage) >= 0.78) return false;
+    return true;
+  });
+  const result = kept.join(" ").trim();
+  return result || reply;
+}
+
+function removeRepeatedQuestion(reply, history) {
+  const priorQuestions = history
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => String(m.content || "").split(/(?<=\?)\s+|\n+/))
+    .map((q) => q.trim())
+    .filter((q) => q.endsWith("?") && q.length > 8);
+  if (!priorQuestions.length) return reply;
+  const parts = String(reply || "").split(/(?<=[.!?\n])\s+/);
+  const kept = parts.filter((part) => {
+    if (!part.trim().endsWith("?")) return true;
+    return !priorQuestions.some((q) => similarityScore(part, q) >= 0.7);
+  });
+  const result = kept.join(" ").trim();
+  return result || reply;
+}
+
 async function callAI(messagesPayload, options = {}) {
   if (userAskedTemporalInfo(options.userText)) {
     return { ok: true, provider: "ollama-temporal", endpoint: OLLAMA_URL, model: OLLAMA_MODEL, reply: buildTemporalAnswer(), attempts: [] };
@@ -1208,8 +1612,8 @@ async function processAutoReplyQueue() {
   }
 }
 
-async function autoReply(jid, userText, contactName) {
-  recordAutoReply({ step: "trigger", jid, userText: String(userText || "").slice(0, 200), hasOpenAI: Boolean(OPENAI_API_KEY), hasEmergent: Boolean(EMERGENT_API_KEY), hasLovable: Boolean(LOVABLE_API_KEY), botEnabled: whatsappConfig.bot_enabled, connectionState });
+async function autoReply(jid, userText, contactName, mediaUrls = []) {
+  recordAutoReply({ step: "trigger", jid, userText: String(userText || "").slice(0, 200), mediaCount: mediaUrls?.length || 0, hasOpenAI: Boolean(OPENAI_API_KEY), hasEmergent: Boolean(EMERGENT_API_KEY), hasLovable: Boolean(LOVABLE_API_KEY), botEnabled: whatsappConfig.bot_enabled, connectionState });
   if (!sock || connectionState !== "open") {
     recordAutoReply({ step: "skip_socket", jid, connectionState });
     return;
@@ -1217,8 +1621,8 @@ async function autoReply(jid, userText, contactName) {
   const history = await loadPersistedAiHistory(jid);
   const phoneDigits = jidToPhone(jid); // CORREÇÃO 2+3: formato numérico para session_id
   try {
-    const data = await callChatAiFunction({ message: userText, history, sessionId: phoneDigits, contact_phone: phoneDigits });
-    const reply = cleanRepeatedText(removeTemporalLeaks(String(data?.response || ""), userText));
+    const data = await callChatAiFunction({ message: userText, history, sessionId: phoneDigits, contact_phone: phoneDigits, returnAnalysis: true });
+    const reply = cleanRepeatedText(removeUserEcho(removeRepeatedQuestion(removeTemporalLeaks(String(data?.response || ""), userText), history), userText));
     if (reply) {
       history.push({ role: "user", content: userText });
       history.push({ role: "assistant", content: reply });
@@ -1227,6 +1631,12 @@ async function autoReply(jid, userText, contactName) {
         const sent = await sendBotText(jid, reply, { source: "chat_ai" });
         recordAutoReply({ step: "sent", jid, attempt: sent.attempt, provider: "chat_ai", appointment: Boolean(data?.appointment), reply: reply.slice(0, 200) });
         if (shouldScheduleWaitFollowUp(reply)) scheduleWaitFollowUp(jid, contactName);
+        // Acionar advogado especializado e juiz virtual em background
+        if (data?.analysis && data.analysis.area && data.analysis.area !== "Em análise jurídica") {
+          triggerLawyerAndJudge({ jid, userText, contactName, history: [...history], analysis: data.analysis, mediaUrls }).catch(e =>
+            recordAutoReply({ step: "trigger_lawyer_fail", jid, error: e?.message || String(e) })
+          );
+        }
       } catch (e) {
         queueAutoReply(jid, reply, { source: "chat_ai", reason: e?.message || String(e) });
         recordAutoReply({ step: "send_queued_after_fail", jid, error: e?.message || String(e) });
@@ -1270,7 +1680,7 @@ async function autoReply(jid, userText, contactName) {
     }
     if (isHistoryDumpReply(rawReply) || isNearDuplicateReply(rawReply, history)) rawReply = buildNonRepeatingFallback(userText, contactName);
   }
-  const reply = cleanRepeatedText(removeTemporalLeaks(rawReply, userText));
+  const reply = cleanRepeatedText(removeUserEcho(removeRepeatedQuestion(removeTemporalLeaks(rawReply, userText), history), userText));
   if (usedFallback) recordAutoReply({ step: "ai_fail_local_fallback", jid, result, reply: reply.slice(0, 200) });
   history.push({ role: "user", content: userText });
   history.push({ role: "assistant", content: reply });
@@ -1293,10 +1703,12 @@ async function closeSock() {
   try { sock?.ws?.close?.(); } catch {}
   sock = null;
   starting = false;
+  startSockLock = false;
 }
 
 async function startSock() {
-  if (starting) return;
+  if (starting || startSockLock) return;
+  startSockLock = true;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -1311,6 +1723,7 @@ async function startSock() {
     ({ version } = await fetchLatestBaileysVersion());
   } catch (e) {
     starting = false;
+    startSockLock = false;
     connectionState = "disconnected";
     lastError = e?.message || String(e);
     throw e;
@@ -1368,16 +1781,20 @@ async function startSock() {
       lastDisconnectCode = code || null;
       const loggedOut = code === DisconnectReason.loggedOut;
       const replaced = code === DisconnectReason.connectionReplaced;
-      const recoverLoggedOut = loggedOut && !manualLogoutRequested && reconnectAttempts < 3;
-      const needsFreshPairing = loggedOut && !manualLogoutRequested && !recoverLoggedOut;
-      const shouldReconnect = !manualLogoutRequested && (!loggedOut || recoverLoggedOut || needsFreshPairing);
+      const recoverLoggedOut = loggedOut && !manualLogoutRequested && reconnectAttempts < 10 && authDeletions < MAX_AUTH_DELETIONS;
+      const needsFreshPairing = loggedOut && !manualLogoutRequested && !recoverLoggedOut && authDeletions < MAX_AUTH_DELETIONS;
+      const shouldReconnect = !manualLogoutRequested && reconnectAttempts < MAX_RECONNECT_ATTEMPTS && (!loggedOut || recoverLoggedOut || needsFreshPairing);
       reconnectAttempts = shouldReconnect ? reconnectAttempts + 1 : 0;
       if (shouldReconnect && !reconnectingSince) reconnectingSince = Date.now();
-      const backoff = Math.min(RECONNECT_DELAY_MS * Math.max(1, reconnectAttempts), RECONNECT_MAX_DELAY_MS);
+      // Exponential backoff: base * 2^attempt, capped at max
+      const backoff = Math.min(RECONNECT_DELAY_MS * Math.pow(2, Math.min(reconnectAttempts, 10)), RECONNECT_MAX_DELAY_MS);
       if (recoverLoggedOut) {
         lastError = `${lastError || "WhatsApp fechou a sessão"} — tentando reconectar sem apagar o pareamento.`;
       }
-      const delay = needsFreshPairing ? 1500 : code === DisconnectReason.restartRequired ? 250 : replaced ? 15000 : backoff;
+      if (needsFreshPairing) {
+        lastError = `${lastError || "Sessão expirada"} — pareamento perdido. Reconectando (${authDeletions + 1}/${MAX_AUTH_DELETIONS} tentativas).`;
+      }
+      const delay = needsFreshPairing ? 3000 : code === DisconnectReason.restartRequired ? 1000 : replaced ? 10000 : Math.min(backoff, 60000);
       await closeSock();
       starting = false;
       connectionState = shouldReconnect ? "disconnected" : "logged_out";
@@ -1387,9 +1804,16 @@ async function startSock() {
         try {
           await rm(AUTH_DIR, { recursive: true, force: true });
           await mkdir(AUTH_DIR, { recursive: true });
+          authDeletions++;
+          console.log(`[baileys] Auth deleted (attempt ${authDeletions}/${MAX_AUTH_DELETIONS})`);
         } catch {}
       }
+      if (!shouldReconnect) {
+        console.log(`[baileys] Max reconnect attempts reached or manual logout. Stopping reconnection.`);
+        lastError = `Conexão perdida após ${reconnectAttempts} tentativas. Clique em Reconectar para tentar novamente.`;
+      }
       if (shouldReconnect && !reconnectTimer) {
+        console.log(`[baileys] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
           startSock().catch((e) => { lastError = e?.message || String(e); });
@@ -1433,6 +1857,54 @@ async function startSock() {
           recordAutoReply({ step: "audio_error", jid, error: e?.stack || e?.message || String(e) });
         }
       }
+      // --- Media detection: images, videos, documents ---
+      if (!fromMe) {
+        const mediaMsg =
+          m?.message?.imageMessage ||
+          m?.message?.videoMessage ||
+          m?.message?.documentMessage ||
+          m?.message?.ephemeralMessage?.message?.imageMessage ||
+          m?.message?.ephemeralMessage?.message?.videoMessage ||
+          m?.message?.ephemeralMessage?.message?.documentMessage ||
+          m?.message?.viewOnceMessage?.message?.imageMessage ||
+          m?.message?.viewOnceMessage?.message?.videoMessage ||
+          m?.message?.viewOnceMessageV2?.message?.imageMessage ||
+          m?.message?.viewOnceMessageV2?.message?.videoMessage;
+        if (mediaMsg && !audioMsg) {
+          const mediaType = mediaMsg === m?.message?.imageMessage || mediaMsg === m?.message?.ephemeralMessage?.message?.imageMessage || mediaMsg === m?.message?.viewOnceMessage?.message?.imageMessage || mediaMsg === m?.message?.viewOnceMessageV2?.message?.imageMessage
+            ? "image"
+            : mediaMsg === m?.message?.videoMessage || mediaMsg === m?.message?.ephemeralMessage?.message?.videoMessage || mediaMsg === m?.message?.viewOnceMessage?.message?.videoMessage || mediaMsg === m?.message?.viewOnceMessageV2?.message?.videoMessage
+              ? "video"
+              : "document";
+          try {
+            const buf = await downloadMediaMessage(m, "buffer", {}, { logger, reuploadRequest: sock.updateMediaMessage });
+            if (buf && buf.length) {
+              const phone = jidToPhone(jid);
+              const name = m?.pushName || phone;
+              saveWhatsAppMedia({
+                jid,
+                phone,
+                name,
+                mediaType,
+                caption: mediaMsg.caption || text || null,
+                buffer: buf,
+                mimetype: mediaMsg.mimetype || null,
+                filename: mediaMsg.fileName || null,
+              }).then(row => {
+                if (row?.signed_url) {
+                  const urls = recentMediaUrls.get(jid) || [];
+                  urls.push({ url: row.signed_url, type: mediaType, caption: mediaMsg.caption || text || null, timestamp: Date.now() });
+                  // Manter apenas as 5 mídias mais recentes
+                  if (urls.length > 5) urls.splice(0, urls.length - 5);
+                  recentMediaUrls.set(jid, urls);
+                }
+              }).catch(e => console.error("[media] saveWhatsAppMedia error:", e?.message || e));
+            }
+          } catch (e) {
+            console.error("[media] Download error:", e?.message || e);
+          }
+        }
+      }
       if (!text) continue;
       const created_at = m?.messageTimestamp
         ? new Date(Number(m.messageTimestamp) * 1000).toISOString()
@@ -1463,7 +1935,11 @@ async function startSock() {
       });
       if (autoDecision.ok) {
         recordAutoReply({ step: "auto_allowed", jid, type, reason: autoDecision.reason });
-        autoReply(jid, text, name).catch((e) => recordAutoReply({ step: "autoreply_throw", jid, error: e?.message || String(e) }));
+        // Coletar mídias recentes para enviar ao advogado/juiz
+        const recentMedia = recentMediaUrls.get(jid) || [];
+        const mediaUrls = recentMedia.map(m => m.url);
+        if (recentMedia.length) recentMediaUrls.delete(jid); // Limpar após uso
+        autoReply(jid, text, name, mediaUrls).catch((e) => recordAutoReply({ step: "autoreply_throw", jid, error: e?.message || String(e) }));
       } else if (!fromMe && whatsappConfig.bot_enabled) {
         recordAutoReply({ step: "auto_skipped", jid, type, reason: autoDecision.reason });
       }
@@ -1481,6 +1957,7 @@ async function startSock() {
   });
 
   starting = false;
+  startSockLock = false;
 }
 
 async function restartSock({ resetAuth = false } = {}) {
@@ -1533,6 +2010,37 @@ startOllamaKeepAlive();
 setInterval(() => {
   processAutoReplyQueue().catch((e) => recordAutoReply({ step: "queue_process_error", error: e?.message || String(e) }));
 }, AUTO_REPLY_RETRY_EVERY_MS);
+
+// Periodic QR auto-refresh: when not connected and QR is stale, force renew
+setInterval(async () => {
+  try {
+    if (connectionState === "open") return;
+    const status = baileysRuntimeStatus();
+    if (status.connected) return;
+    const qrAgeMs = currentQRAt ? Date.now() - currentQRAt : null;
+    if (!qrAgeMs || qrAgeMs > QR_RENEW_AFTER_MS) {
+      await ensureQrReady({ forceRenew: false });
+    }
+  } catch {}
+}, 30000);
+
+// Connection health check: ensure socket stays alive
+setInterval(async () => {
+  try {
+    if (connectionState !== "open" || !sock) return;
+    // Don't trigger reconnect if already reconnecting
+    if (reconnectTimer || startSockLock) return;
+    // Send a keepalive ping by checking if socket is still responsive
+    const isAlive = sock?.user && sock?.ws?.readyState === 1;
+    if (!isAlive && connectionState === "open") {
+      console.log("[keepalive] socket appears dead, triggering reconnect");
+      lastError = "Conexão perdida — reconectando automaticamente...";
+      await restartSock({ resetAuth: false });
+    }
+  } catch (e) {
+    console.error("[keepalive] health check error:", e?.message);
+  }
+}, 90000);
 
 // ---- Helpers ----
 const ok = (data = {}) => ({ ok: true, ...data });
@@ -1983,10 +2491,21 @@ app.get("/api/whatsapp/messages/:id", (req, res) => {
   res.json([]);
 });
 
-const creativesStore = [];
-
-app.get("/api/creatives", (_req, res) => {
-  res.json(creativesStore);
+app.get("/api/creatives", async (_req, res) => {
+  if (!supabaseDb) return res.json([]);
+  try {
+    const { data, error } = await supabaseDb
+      .from("generated_images")
+      .select("id, storage_path, prompt, created_at, kind, title, network, format, caption, tone, case_type")
+      .eq("kind", "creative")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (e) {
+    console.warn("[creatives] GET fallback:", e?.message);
+    res.json([]);
+  }
 });
 
 app.post("/api/creatives/generate", async (req, res) => {
@@ -2001,8 +2520,91 @@ app.post("/api/creatives/generate", async (req, res) => {
     image_b64: result.ok ? result.b64_json : "",
     ...(result.ok ? {} : { error: result.error || "Imagem não gerada" }),
   };
-  creativesStore.unshift(item);
+  // Persiste no Supabase quando disponível
+  if (supabaseDb) {
+    try {
+      const userId = req.user?.id || null;
+      if (userId && item.image_b64) {
+        const { error: upErr } = await supabaseDb.storage
+          .from("creative-assets")
+          .upload(`${userId}/creative-${Date.now()}.png`, Buffer.from(item.image_b64, "base64"), {
+            contentType: "image/png", upsert: true,
+          });
+        if (!upErr) {
+          await supabaseDb.from("generated_images").insert({
+            user_id: userId, storage_path: `${userId}/creative-${Date.now()}.png`,
+            prompt: topic, kind: "creative", paid: false,
+            title: item.title, network: item.network, format: item.format,
+            caption: item.caption, tone: req.body?.tone || null, case_type: req.body?.case_type || null,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("[creatives] POST persist failed:", e?.message);
+    }
+  }
   res.status(201).json(item);
+});
+
+// ---- WhatsApp Media ----
+app.get("/api/whatsapp/media", async (req, res) => {
+  if (!supabaseDb) return res.json([]);
+  try {
+    const { data, error } = await supabaseDb
+      .from("whatsapp_media")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (e) {
+    res.status(500).json({ error: e?.message });
+  }
+});
+
+app.get("/api/whatsapp/media/:id", async (req, res) => {
+  if (!supabaseDb) return res.status(404).json({ error: "no db" });
+  try {
+    const { data, error } = await supabaseDb
+      .from("whatsapp_media")
+      .select("*")
+      .eq("id", req.params.id)
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (e) {
+    res.status(404).json({ error: e?.message });
+  }
+});
+
+app.delete("/api/whatsapp/media/:id", async (req, res) => {
+  if (!supabaseDb) return res.status(404).json({ error: "no db" });
+  try {
+    const { data: row } = await supabaseDb.from("whatsapp_media").select("storage_path").eq("id", req.params.id).single();
+    if (row?.storage_path) {
+      await supabaseDb.storage.from("whatsapp-media").remove([row.storage_path]);
+    }
+    const { error } = await supabaseDb.from("whatsapp_media").delete().eq("id", req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e?.message });
+  }
+});
+
+app.patch("/api/whatsapp/media/:id", async (req, res) => {
+  if (!supabaseDb) return res.status(404).json({ error: "no db" });
+  try {
+    const updates = {};
+    if (req.body?.folder !== undefined) updates.folder = req.body.folder;
+    if (req.body?.description !== undefined) updates.description = req.body.description;
+    if (req.body?.tags !== undefined) updates.tags = req.body.tags;
+    const { error } = await supabaseDb.from("whatsapp_media").update(updates).eq("id", req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e?.message });
+  }
 });
 
 app.post("/api/chat/message", async (req, res) => {
@@ -2042,7 +2644,7 @@ app.post("/api/chat/message", async (req, res) => {
     if (isHistoryDumpReply(rawReply) || isNearDuplicateReply(rawReply, normalizedHistory)) rawReply = buildNonRepeatingFallback(message, req.body?.visitor_name || "Cliente");
   }
   const handoff = /HANDOFF[_\s-]*K[EÊ]NIA/i.test(rawReply);
-  const reply = cleanRepeatedText(removeTemporalLeaks(rawReply, message)).trim();
+  const reply = cleanRepeatedText(removeUserEcho(removeRepeatedQuestion(removeTemporalLeaks(rawReply, message), normalizedHistory), message)).trim();
   res.json({
     session_id: req.body?.session_id || `session-${Date.now()}`,
     response: reply,
@@ -2058,6 +2660,7 @@ registerAiBuilderRoutes(app);
 // ---- Fallback /api/* ----
 app.all("/api/*", (_req, res) => res.json(ok({ fallback: true })));
 
+console.log("[kenia-backend] Starting... routes registered:", typeof app.get === "function");
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Backend running on :${PORT}`);
+  console.log(`[kenia-backend] Running on :${PORT} at ${new Date().toISOString()}`);
 });

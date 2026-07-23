@@ -1,4 +1,10 @@
-project_id = "kzlxysxvvlupjtrmxqmb"
+project_id = "uzzbgjwpfxokagrvmdoa"
 
-[functions.whatsapp-twilio-webhook]
+[functions.search-emergent-coupons]
+verify_jwt = false
+
+[functions.instagram-oauth-start]
+verify_jwt = false
+
+[functions.instagram-oauth-callback]
 verify_jwt = false
