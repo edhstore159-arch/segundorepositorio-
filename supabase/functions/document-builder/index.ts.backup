@@ -1,0 +1,615 @@
+// Import das cabeçalhos CORS
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+// Configurações de IA
+const OPENROUTER_API_KEY = DenoUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY") || "";
+const OLLAMA_URL = Deno.env.get("OLLAMA_URL") || "http://localhost:11434";
+const OLLAMA_MODEL = Deno.env.get("OLLAMA_MODEL") || "qwen2.5:3b-instruct";
+
+// Sistema de treinamento jurídico
+const LEGAL_TRAINING_ENABLED = Deno.env.get("LEGAL_TRAINING_ENABLED") === "true";
+const TRAINING_DATA_PATH = "/tmp/legal_training.json";
+
+// Interface para dados de treinamento
+interface TrainingData {
+  input: string;
+  expectedOutput: string;
+  actualOutput?: string;
+  score?: number;
+  feedback?: string;
+  timestamp: string;
+}
+
+// Armazenamento em memória para dados de treinamento
+let trainingData: TrainingData[] = [];
+
+async function callOpenRouter(messages: Array<{ role: string; content: string }>, temperature = 0.7, maxTokens = 10000): Promise<string | null> {
+  if (!OPENROUTER_APIoK) return null;
+  try {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENROUTER_APIoKK}`,
+        "HTTP-Referer": "https://deusfiel.onrender.com",
+        "X-Title": "Deus Fiel - Construtor de Documentos",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-4o-mini",
+        messages,
+        temperature,
+        max_tokens: maxTokens,
+      }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.error("[document-builder] OpenRouter error:", resp.status, err.slice(0, 200));
+      return null;
+    }
+    const data = await resp.json();
+    return data?.choices?.[0]?.message?.content || null;
+  } catch (e) {
+    console.error("[document-builder] OpenRouter exception:", e);
+    return null;
+  }
+}
+
+async function callOllama(prompt: string, projectFiles: Record<string, string> = {}): Promise<string | null> {
+  try {
+    const context = Object.entries(projectFiles)
+      .map(([path, content]) => `Arquivo ${path}:\n${content}\n`)
+      .join("\n\n");
+
+    const fullPrompt = `
+Context:
+${context}
+
+Task: ${prompt}
+
+Please respond in JSON format with the following structure:
+{
+  "response": "Brief explanation of what was generated",
+  "files": [
+    { "path": "documento.html", "content": "<!DOCTYPE html>..." },
+    { "path": "documento.txt", "content": "plain text document" }
+  ]
+}
+`;
+
+    const resp = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt: fullPrompt,
+        stream: false,
+        format: "json",
+        options: {
+          temperature: 0.7,
+          num_predict: 8000,
+        },
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.error("[document-builder] Ollama error:", resp.status, err.slice(0, 200));
+      return null;
+    }
+
+    const data = await resp.json();
+    return data.response || null;
+  } catch (e) {
+    console.error("[document-builder] Ollama exception:", e);
+    return null;
+  }
+}
+
+const SYSTEM_PROMPT = `Você é um advogado jurídico especialista em direito brasileiro, com ampla experiência em elaboração de petições, contratos, procurações, pareceres e todos os tipos de documentos jurídicos. Gere documentos profissionais, tecnicamente corretos e prontos para uso.
+
+FORMATO — SEMPRE retorne JSON válido:
+{
+  "response": "Breve explicação do que foi gerado, com orientações de uso",
+  "files": [
+    { "path": "documento.html", "content": "<!DOCTYPE html>..." },
+    { "path": "documento.txt", "content": "texto puro do documento para copiar e colar" }
+  ]
+}
+
+TIPOS DE DOCUMENTOS:
+- Petição Inicial, Contestação, Contrato, Procuração, Parecer Jurídico, Recurso, Acordo, Notificação Extrajudicial, Memorial de Contraditório
+
+ESTRUTURA OBRIGATÓRIA:
+- Cabeçalho: EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) (para petições)
+- Qualificação completa das partes (nome, CPF/CNPJ, endereço)
+- FUNDAMENTAÇÃO LEGAL: cite artigos do CPC, CLT, Código Civil, CF, etc.
+- Numeráis das cláusulas ou seções
+- Local e data
+- Fechamento com "Termos em que, pede deferimento"
+- Assinatura: [Nome do Advogado], OAB/XX nº [número]
+
+FORMATAÇÃO HTML:
+- font-family: 'Times New Roman', serif; max-width: 800px; margin: 40px auto
+- line-height: 1.8; font-size: 14px; text-indent: 2em; text-align: justify
+
+REGRAS:
+- NUNCA invente dados pessoais reais — use placeholders
+- Cite artigos de lei corretamente
+- Use linguagem formal e técnica jurídica
+- Sempre gere ARQUIVOS (html + txt), não apenas texto`;
+
+function parseAiResponse(raw: string): { response: string; files: Record<string, string> } | null {
+  const text = (raw || "").trim();
+  if (!text) return null;
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*?"files"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const jsonStr = jsonMatch[1] || jsonMatch[0];
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.files && typeof parsed.files === "object") {
+        const files: Record<string, string> = {};
+        if (Array.isArray(parsed.files)) {
+          for (const f of parsed.files) {
+            if (f.path && f.content) files[f.path] = f.content;
+          }
+        } else {
+          for (const [path, content] of Object.entries(parsed.files)) {
+            if (typeof content === "string") files[path] = content;
+          }
+        }
+        return { response: parsed.response || "Documento gerado.", files };
+      }
+    } catch (e) {
+      console.error("[document-builder] JSON parse error:", e);
+    }
+  }
+  const htmlMatch = text.match(/<!DOCTYPE[\s\S]*/i);
+  if (htmlMatch) {
+    return { response: "Documento gerado.", files: { "documento.html": htmlMatch[0].trim() } };
+  }
+  return null;
+}
+
+// Função de auto-avaliação e melhoria
+async function evaluateAndImprove(documentType: string, userMessage: string, generatedResponse: { response: string; files: Record<string, string> }): Promise<{ response: string; files: Record<string, string>; evaluation: any }> {
+  if (!LEGAL_TRAINING_ENABLED) {
+    return { ...generatedResponse, evaluation: { enabled: false } };
+  }
+
+  try {
+    // Criar prompt de avaliação
+    const evaluationPrompt = `
+Você é um avaliador especializado em documentos jurídicos brasileiros. Avalie o seguinte documento gerado:
+
+TIPO DE DOCUMENTO: ${documentType}
+SOLICITAÇÃO ORIGINAL: ${userMessage}
+
+DOCUMENTO GERADO:
+${JSON.stringify(generatedResponse, null, 2)}
+
+Avalie o documento com base em:
+1. Corrigibilidade jurídica (citações corretas de leis, artigos, etc.)
+2. Estrutura e formatação adequadas
+3. Linguagem jurídica apropriada
+4. Completeza dos elementos necessários
+5. Uso de placeholders apropriados (não dados reais)
+
+Forneça sua avaliação em JSON:
+{
+  "score": 0-100,
+  "feedback": "Feedback detalhado em português",
+  "suggestions": ["lista de sugestões para melhoria"],
+  "legalAccuracy": 0-100,
+  "structureScore": 0-100,
+  "languageScore": 0-100,
+  "completenessScore": 0-100
+}
+`;
+
+    // Avaliar com IA (usando Ollama como fallback se OpenRouter não disponível)
+    let evaluationText = await callOllama(evaluationPrompt, {});
+
+    if (!evaluationText) {
+      // Tentativa com OpenRouter se disponível
+      evaluationText = await callOpenRouter([
+        { role: "system", content: "Você é um avaliador especializado em documentos jurídicos brasileiros." },
+        { role: "user", content: evaluationPrompt }
+      ], 0.1, 2000);
+    }
+
+    if (!evaluationText) {
+      throw new Error("Não foi possível obter avaliação");
+    }
+
+    // Parsear avaliação
+    const evaluationMatch = evaluationText.match(/```json\s*([\s\S]*?)```/) || evaluationText.match(/\{[\s\S]*\}/);
+    let evaluation = { score: 75, feedback: "Avaliação automática não disponível", suggestions: [] };
+
+    if (evaluationMatch) {
+      try {
+        const evalStr = evaluationMatch[1] || evaluationMatch[0];
+        evaluation = JSON.parse(evalStr);
+      } catch (e) {
+        console.error("[document-builder] Erro ao fazer parse da avaliação:", e);
+      }
+    }
+
+    // Armazenar dados de treinamento
+    const trainingEntry: TrainingData = {
+      input: userMessage,
+      expectedOutput: "", // Em um sistema real, isso viria de feedback humano
+      actualOutput: JSON.stringify(generatedResponse),
+      score: evaluation.score,
+      feedback: evaluation.feedback,
+      timestamp: new Date().toISOString()
+    };
+
+    // Manter apenas os últimos 1000 registros para não encher a memória
+    if (trainingData.length >= 1000) {
+      trainingData.shift();
+    }
+    trainingData.push(trainingEntry);
+
+    // Se a pontuação estiver abaixo de um threshold, tentar melhorar
+    if (evaluation.score < 70) {
+      console.log("[document-builder] Baixa pontuação detectada, tentando melhoria...");
+
+      const improvementPrompt = `
+Você melhorou este documento jurídico com base na seguinte avaliação:
+
+AVALIAÇÃO:
+- Score: ${evaluation.score}/100
+- Feedback: ${evaluation.feedback}
+- Sugestões: ${evaluation.suggestions.join("\n")}
+
+DOCUMENTO ORIGINAL:
+${JSON.stringify(generatedResponse, null, 2)}
+
+MELHORE o documento corrigindo os problemas identificados.
+Retorne NOVAMENTE no formato JSON:
+{
+  "response": "Explicação das melhorias feitas",
+  "files": [
+    { "path": "documento.html", "content": "<!DOCTYPE html>..." },
+    { "path": "documento.txt", "content": "texto puro do documento" }
+  ]
+}
+`;
+
+      let improvedText = await callOllama(improvementPrompt, {});
+
+      if (!improvedText && OPENROUTER_API_KEY) {
+        improvedText = await callOpenRouter([
+          { role: "system", content: "Você é um advogado jurídico especialista em direito brasileiro." },
+          { role: "user", content: improvementPrompt }
+        ], 0.7, 10000);
+      }
+
+      if (improvedText) {
+        const improved = parseAiResponse(improvedText);
+        if (improved) {
+          console.log("[document-builder] Documento melhorado com sucesso");
+          return {
+            ...improved,
+            evaluation: { ...evaluation, improved: true, originalScore: evaluation.score }
+          };
+        }
+      }
+    }
+  } catch (error) {
+    console.error("[document-builder] Erro na avaliação/melhoria:", error);
+  }
+
+  // Se não conseguiu melhorar ou avaliação não habilitada, retornar original
+  return { ...generatedResponse, evaluation: { enabled: LEGAL_TRAINING_ENABLED } };
+}
+
+// Funções de treinamento jurídico especializado
+async function simulateLegalCase(caseType: string, complexity: "basic" | "intermediate" | "advanced" = "intermediate"): Promise<any> {
+  const simulationPrompts: Record<string, string> = {
+    "Petição Inicial": "Crie uma petição inicial básica para uma ação de indenização por danos morais",
+    "Contestação": "Elabore uma contestação em ação de cumprimento de contrato",
+    "Contrato": "Redija um contrato de prestação de serviços simples",
+    "Procuração": "Modele uma procuração pública para poderes gerais",
+    "Parecer Jurídico": "Elabore um parecer sobre a constitucionalidade de uma lei que restringe direitos",
+    "Recurso": "Prepare um recurso apelação contra decisão de primeiro grau",
+    "Acordo": "Redija um termo de acordo em fase de execução",
+    "Notificação Extrajudicial": "Modele uma notificação de inadimplemento contratual",
+    "Memorial de Contraditório": "Elabore memorial contraditório em ação de família"
+  };
+
+  const basePrompt = simulationPrompts[caseType] || "Crie um documento jurídico básico";
+  const complexityModifier =
+    complexity === "advanced" ? "com questões jurídicas complexas e múltiplas partes envolvidas" :
+    complexity === "intermediate" ? "com questões jurídicas intermediárias" :
+    "com questões jurídicas básicas";
+
+  const prompt = `${basePrompt}. ${complexityModifier}. Inclua questões reais de direito brasileiro com citations corretas.`;
+
+  try {
+    let result = await callOllama(prompt, {});
+    if (!result && OPENROUTER_API_KEY) {
+      result = await callOpenRouter([
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt }
+      ], 0.7, 4000);
+    }
+
+    return result ? parseAiResponse(result) : null;
+  } catch (error) {
+    console.error("[document-builder] Erro na simulação de caso:", error);
+    return null;
+  }
+}
+
+async function trainArgumentation(topic: string, position: "autor" | "réu" | "autoridade"): Promise<any> {
+  const prompt = `
+Você é um advogado especialista. Desenvolva uma argumentação jurídica sólida sobre o seguinte tema:
+
+TEMA: ${topic}
+SUA POSIÇÃO: ${position === "autor" ? "parte autora" : position === "réu" ? "parte ré" : "autoridade julgadora"}
+
+Sua argumentação deve incluir:
+1. Introdução clara da posição
+2. Fundamentação legal com artigos específicos de leis brasileiras
+3. Jurisprudência relevante (súmulas, precedentes de STJ/STF)
+4. Analogias e diferenças pertinentes
+5. Conclusão persuasiva
+
+Formato de resposta JSON:
+{
+  "response": "Explicação da argumentação desenvolvida",
+  "files": [
+    { "path": "argumentacao.txt", "content": "texto da argumentação" }
+  ]
+}
+`;
+
+  try {
+    let result = await callOllama(prompt, {});
+    if (!result && OPENROUTER_API_KEY) {
+      result = await callOpenRouter([
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt }
+      ], 0.7, 3000);
+    }
+
+    return result ? parseAiResponse(result) : null;
+  } catch (error) {
+    console.error("[document-builder] Erro no treinamento de argumentação:", error);
+    return null;
+  }
+}
+
+async function evaluateAccuracy(documentType: string, documentContent: string): Promise<any> {
+  const prompt = `
+Você é um juiz federal com 20 anos de experiência. Avalie a precisão jurídica do seguinte documento:
+
+TIPO DE DOCUMENTO: ${documentType}
+CONTEÚDO:
+${documentContent}
+
+Avalie especificamente:
+1. Correção das citações legais (artigos, leis, súmulas)
+2. Aplicação correta dos princípios jurídicos
+3. Coerência argumentativa
+4. Uso adequado de termos técnicos
+5. Conformidade com a estrutura processual exigida
+
+Responda em JSON:
+{
+  "accuracyScore": 0-100,
+  "legalIssues": ["lista de problemas jurídicos identificados"],
+  "missingElements": ["elementos que deveriam estar presentes"],
+  "strongPoints": ["pontos fortes do documento"],
+  "recommendations": ["recomendações para melhoria"]
+}
+`;
+
+  try {
+    let result = await callOllama(prompt, {});
+    if (!result && OPENROUTER_API_KEY) {
+      result = await callOpenRouter([
+        { role: "system", content: "Você é um juiz federal especialista em direito brasileiro." },
+        { role: "user", content: prompt }
+      ], 0.3, 2000);
+    }
+
+    if (result) {
+      try {
+        return JSON.parse(result);
+      } catch (e) {
+        return {
+          accuracyScore: 50,
+          legalIssues: ["Erro ao processar avaliação"],
+          missingElements: [],
+          strongPoints: [],
+          recommendations: ["Tentar novamente"]
+        };
+      }
+    }
+
+    return {
+      accuracyScore: 50,
+      legalIssues: ["Avaliação não disponível"],
+      missingElements: [],
+      strongPoints: [],
+      recommendations: []
+    };
+  } catch (error) {
+    console.error("[document-builder] Erro na avaliação de precisão:", error);
+    return {
+      accuracyScore: 0,
+      legalIssues: ["Erro interno"],
+      missingElements: [],
+      strongPoints: [],
+      recommendations: []
+    };
+  }
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    const body = await req.json().catch(() => ({}));
+    const userMessage: string = String(body.message ?? "").trim();
+    const history: Array<{ role: string; content: string }> = Array.isArray(body.history) ? body.history : [];
+    const projectFiles: Record<string, string> = body.project_files || {};
+    const documentType: string = String(body.document_type || "Petição Inicial");
+    const enableTraining: boolean = body.enableTraining === true;
+    const enableSelfImprovement: boolean = body.enableSelfImprovement === true;
+    const operationType: string = body.operationType || "generate"; // generate, simulate, train, evaluate
+
+    if (!userMessage && operationType === "generate") {
+      return new Response(
+        JSON.stringify({ error: "message vazio" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Headers comuns
+    const baseHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+
+    // Operações especiais de treinamento
+    if (operationType === "simulate") {
+      const simulation = await simulateLegalCase(documentType, "intermediate");
+      if (!simulation) {
+        return new Response(
+          JSON.stringify({ error: "Não foi possível simular o caso jurídico" }),
+          { status: 502, headers: baseHeaders },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          response: "Caso jurídico simulado gerado para treinamento",
+          files: simulation.files,
+          simulation: true
+        }),
+        { headers: baseHeaders }
+      );
+    }
+
+    if (operationType === "train") {
+      const training = await trainArgumentation(userMessage, "autor");
+      if (!training) {
+        return new Response(
+          JSON.stringify({ error: "Não foi possível realizar o treinamento de argumentação" }),
+          { status: 502, headers: baseHeaders },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          response: "Treinamento de argumentação concluído",
+          files: training.files,
+          training: true
+        }),
+        { headers: baseHeaders }
+      );
+    }
+
+    if (operationType === "evaluate") {
+      // Para avaliação, esperamos que o documento venha no corpo da requisição
+      const documentContent = body.documentContent || "";
+      if (!documentContent) {
+        return new Response(
+          JSON.stringify({ error: "documentContent é obrigatório para avaliação" }),
+          { status: 400, headers: baseHeaders },
+        );
+      }
+
+      const evaluation = await evaluateAccuracy(documentType, documentContent);
+      return new Response(
+        JSON.stringify({
+          response: "Avaliação de precisão concluída",
+          evaluation
+        }),
+        { headers: baseHeaders }
+      );
+    }
+
+    // Operação padrão: geração de documento com auto-melhoria
+    const contextHint = Object.keys(projectFiles).length > 0
+      ? `Documento atual em elaboração:\n${Object.entries(projectFiles).map(([p, c]) => `--- ${p} ---\n${c}`).join("\n\n")}\n\n---\n\n`
+      : "";
+
+    const messages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: `Tipo de documento: ${documentType}\n\n${contextHint}${userMessage}` },
+    ];
+
+    console.log("[document-builder] Calling AI providers, type:", documentType);
+
+    // Tentar múltiplos provedores com fallback
+    let rawText = null;
+    let providerUsed = "";
+
+    // Tentativa 1: OpenRouter (se configurado)
+    if (OPENROUTER_API_KEY) {
+      rawText = await callOpenRouter(messages, 0.7, 10000);
+      if (rawText) providerUsed = "openrouter";
+    }
+
+    // Tentativa 2: Ollama (local)
+    if (!rawText) {
+      const prompt = Object.keys(projectFiles).length > 0
+        ? `Contexto do projeto:\n${Object.entries(projectFiles).map(([path, content]) => `Arquivo ${path}:\n${content}\n`).join("\n\n")}\n\nPedido: ${userMessage}\n\nTipo de documento: ${documentType}`
+        : userMessage;
+
+      rawText = await callOllama(prompt, projectFiles);
+      if (rawText) providerUsed = "ollama";
+    }
+
+    if (!rawText) {
+      console.error("[document-builder] All providers failed. OPENROUTER:", !!OPENROUTER_API_KEY);
+      return new Response(
+        JSON.stringify({ error: "Nenhum provider de IA disponível" }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    console.log("[document-builder] Got response from", providerUsed, "length:", rawText.length);
+
+    const result = parseAiResponse(rawText);
+
+    if (!result || Object.keys(result.files).length === 0) {
+      console.error("[document-builder] Parse failed. Raw length:", rawText.length);
+      return new Response(
+        JSON.stringify({ error: "Não foi possível parsear resposta da IA", files: {}, debug: rawText.slice(0, 500) }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    console.log("[document-builder] OK! Files:", Object.keys(result.files).join(", "));
+
+    // Aplicar auto-melhoria e avaliação se solicitado
+    let finalResponse = { ...result, provider: providerUsed };
+
+    if (enableSelfImprovement || enableTraining) {
+      const enhanced = await evaluateAndImprove(documentType, userMessage, result);
+      finalResponse = {
+        ...enhanced,
+        provider: providerUsed,
+        enhancementApplied: enableSelfImprovement,
+        trainingEnabled: enableTraining
+      };
+    }
+
+    return new Response(
+      JSON.stringify(finalResponse),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  } catch (err) {
+    console.error("[document-builder] fatal:", err);
+    return new Response(
+      JSON.stringify({ error: String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+});

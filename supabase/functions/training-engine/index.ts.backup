@@ -1,0 +1,218 @@
+import { chatCompletion } from "../_shared/llm.ts";
+
+const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+const TRAINING_AREAS = ["penal", "civel", "trabalhista", "familia", "previdenciario", "tributario", "administrativo", "constitucional", "consumidor", "ambiental"];
+
+const CASE_PROMPT = `Gere um caso jurídico simulado para treinamento. Retorne APENAS JSON válido:
+{
+  "title": "Título do caso",
+  "description": "Descrição completa com fatos, partes, provas e contexto",
+  "parties": "Autor vs. Réu",
+  "question": "Pergunta-chave",
+  "area": "área do direito",
+  "difficulty": "facil|medio|dificil",
+  "key_issues": ["Questão 1", "Questão 2"],
+  "applicable_laws": ["Art. X"]
+}
+Use nomes fictícios. Casos realistas baseados em jurisprudência.`;
+
+const EVALUATE_PROMPT = `Avalie a resposta do profissional. Retorne APENAS JSON válido:
+{
+  "score": 85,
+  "feedback": "Feedback detalhado",
+  "strengths": ["Ponto forte 1"],
+  "weaknesses": ["Melhorar 1"],
+  "criteria": [
+    {"name": "Fundamentação Legal", "met": true, "feedback": "..."},
+    {"name": "Argumentação", "met": true, "feedback": "..."},
+    {"name": "Conclusão", "met": false, "feedback": "..."}
+  ],
+  "suggested_improvement": "Sugestão específica"
+}
+Seja justo mas exigente. Score 0-100.`;
+
+const STRATEGIES_PROMPT = `Liste 8 estratégias de captação de clientes para escritório de advocacia. Retorne APENAS JSON válido:
+{
+  "strategies": [
+    {
+      "id": "nome_estrategia",
+      "name": "Nome da Estratégia",
+      "desc": "Descrição breve",
+      "steps": ["Passo 1", "Passo 2"],
+      "script": "Script pronto para usar",
+      "tips": ["Dica 1", "Dica 2"],
+      "success_rate": 75,
+      "difficulty": "facil|medio|dificil"
+    }
+  ]
+}`;
+
+const TIPS_PROMPT = `Dicas de marketing jurídico. Retorne APENAS JSON válido:
+{
+  "tips": [
+    {
+      "id": "dica_1",
+      "name": "Nome da Dica",
+      "category": "marketing|vendas|comunicação",
+      "content": "Dica detalhada com passo a passo",
+      "importance": "alta|media|baixa"
+    }
+  ]
+}`;
+
+function parseJsonResponse(raw: string): Record<string, unknown> | null {
+  const text = (raw || "").trim();
+  if (!text) return null;
+  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const jsonStr = jsonMatch[1] || jsonMatch[0];
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.error("[training-engine] JSON parse error:", e);
+    }
+  }
+  return null;
+}
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    const body = await req.json().catch(() => ({}));
+    const action: string = String(body.action ?? "").trim();
+    const mode: string = String(body.mode ?? "lawyer").trim();
+    const area: string = String(body.area ?? "civel").trim();
+    const difficulty: string = String(body.difficulty ?? "medio").trim();
+    const caseData = body.case_data || null;
+    const userResponse: string = String(body.user_response ?? "").trim();
+    const history: Array<{ role: string; content: string }> = Array.isArray(body.history) ? body.history : [];
+
+    if (action === "list_strategies") {
+      return new Response(
+        JSON.stringify({
+          strategies: [
+            { id: "abordagem_inicial", name: "Abordagem Inicial", desc: "Primeira impressão e quebra de gelo" },
+            { id: "identificacao_dor", name: "Identificação de Dor", desc: "Mapear a necessidade real do cliente" },
+            { id: "demonstracao_valor", name: "Demonstração de Valor", desc: "Mostrar diferenciais do escritório" },
+            { id: "tratamento_objecao", name: "Tratamento de Objeções", desc: "Superar resistências comuns" },
+            { id: "fechamento", name: "Fechamento", desc: "Conversão do lead em cliente" },
+            { id: "follow_up", name: "Follow-up Estratégico", desc: "Manter contato após primeira interação" },
+            { id: "captura_whatsapp", name: "Captação via WhatsApp", desc: "Estratégias específicas para WhatsApp" },
+            { id: "indicação", name: "Captação por Indicação", desc: "Como pedir e receber indicações" },
+          ],
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    let systemPrompt = "";
+    let userContent = "";
+
+    if (action === "generate_case") {
+      systemPrompt = CASE_PROMPT;
+      const areaLabel = area.charAt(0).toUpperCase() + area.slice(1);
+      const diffLabel = difficulty === "facil" ? "Fácil" : difficulty === "dificil" ? "Difícil" : "Médio";
+      userContent = `Gere um caso simulado para ${mode === "lawyer" ? "ADVOCACIA" : "JULGAMENTO"} na área de ${areaLabel} com dificuldade ${diffLabel}. Use nomes fictícios. Caso realista.`;
+    } else if (action === "evaluate") {
+      systemPrompt = EVALUATE_PROMPT;
+      const modeLabel = mode === "lawyer" ? "ADVOCACIA" : "JULGAMENTO";
+      userContent = `Modo: ${modeLabel}\n\nCASO:\n${JSON.stringify(caseData, null, 2)}\n\nRESPOSTA:\n${userResponse}`;
+    } else if (action === "get_strategies") {
+      systemPrompt = STRATEGIES_PROMPT;
+      userContent = "Liste as 8 estratégias de captação de clientes para escritório de advocacia.";
+    } else if (action === "get_tips") {
+      systemPrompt = TIPS_PROMPT;
+      userContent = "Liste dicas de marketing jurídico para captação de clientes.";
+    } else {
+      return new Response(
+        JSON.stringify({ error: "action inválida" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: userContent },
+    ];
+
+    console.log("[training-engine] Calling AI, action:", action);
+
+    const aiResult = await chatCompletion({
+      messages,
+      temperature: 0.7,
+      maxTokens: 4000,
+      model: "openai/gpt-4o-mini",
+    });
+
+    if (!aiResult.ok) {
+      console.error("[training-engine] AI failed:", aiResult.status, aiResult.error);
+      return new Response(
+        JSON.stringify({ error: "IA indisponível", details: String(aiResult.error || "").slice(0, 200) }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    const rawText = aiResult.data?.choices?.[0]?.message?.content || "";
+    console.log("[training-engine] Got response, length:", rawText.length, "provider:", aiResult.provider);
+
+    const parsed = parseJsonResponse(rawText);
+
+    if (!parsed) {
+      console.error("[training-engine] Parse failed. Raw:", rawText.slice(0, 300));
+      return new Response(
+        JSON.stringify({ error: "Não foi possível parsear resposta da IA", debug: rawText.slice(0, 500) }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (action === "generate_case") {
+      console.log("[training-engine] Case generated via", aiResult.provider);
+      return new Response(
+        JSON.stringify({ case_data: parsed, provider: aiResult.provider }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (action === "evaluate") {
+      const score = typeof parsed.score === "number" ? Math.min(100, Math.max(0, parsed.score)) : 50;
+      console.log("[training-engine] Evaluated via", aiResult.provider, "Score:", score);
+      return new Response(
+        JSON.stringify({ score, feedback: parsed.feedback || "Avaliação concluída.", evaluation: parsed, provider: aiResult.provider }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (action === "get_strategies") {
+      return new Response(
+        JSON.stringify({ strategies: parsed.strategies || [], provider: aiResult.provider }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    if (action === "get_tips") {
+      return new Response(
+        JSON.stringify({ tips: parsed.tips || [], provider: aiResult.provider }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ error: "Ação desconhecida" }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  } catch (err) {
+    console.error("[training-engine] fatal:", err);
+    return new Response(
+      JSON.stringify({ error: String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
+  }
+});
