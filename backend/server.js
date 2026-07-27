@@ -32,7 +32,7 @@ const supabaseDb = SUPABASE_URL && SUPABASE_DB_KEY
   ? createClient(SUPABASE_URL, SUPABASE_DB_KEY, { auth: { persistSession: false } })
   : null;
 
-async function callChatAiFunction({ message, history = [], sessionId = null, userId = null, wantAudio = false, returnAnalysis = false }) {
+async function callChatAiFunction({ message, history = [], sessionId = null, userId = null, wantAudio = false, returnAnalysis = false, contact_phone = null }) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("chat-ai indisponível: credenciais do backend ausentes");
   const resp = await fetch(`${SUPABASE_URL}/functions/v1/chat-ai`, {
     method: "POST",
@@ -48,6 +48,7 @@ async function callChatAiFunction({ message, history = [], sessionId = null, use
       user_id: userId,
       want_audio: wantAudio,
       return_analysis: returnAnalysis,
+      contact_phone,
     }),
   });
   const data = await resp.json().catch(async () => ({ error: await resp.text().catch(() => "Erro desconhecido") }));
@@ -1092,7 +1093,8 @@ function trimAiHistory(history, limit = AI_HISTORY_LIMIT) {
 async function loadPersistedAiHistory(jid) {
   const cached = trimAiHistory(aiHistory.get(jid));
   if (cached.length || !supabaseDb || !jid) return cached;
-  const sessionId = `whatsapp:${jid}`;
+  const phoneDigits = jidToPhone(jid);
+  const sessionId = phoneDigits || `whatsapp:${jid}`;
   try {
     const { data, error } = await supabaseDb
       .from("conversations")
@@ -1118,10 +1120,11 @@ async function loadPersistedAiHistory(jid) {
 
 async function persistAiTurn(jid, userText, reply) {
   if (!supabaseDb || !jid || !String(userText || "").trim()) return;
+  const phoneDigits = jidToPhone(jid);
   try {
     const { error } = await supabaseDb.from("conversations").insert({
       user_id: null,
-      session_id: `whatsapp:${jid}`,
+      session_id: phoneDigits || `whatsapp:${jid}`,
       message: String(userText || ""),
       response: String(reply || ""),
     });
