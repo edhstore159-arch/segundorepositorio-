@@ -1,11 +1,15 @@
-// Multi-model chat via Emergent API (streaming).
-// Suporta ChatGPT, Gemini e Claude via Emergent. Ollama é chamado direto pelo cliente.
+// Multi-model chat via Emergent API (streaming) with Claude FCC fallback.
+// Suporta ChatGPT, Gemini e Claude via Emergent. Claude FCC via ngrok. Ollama é chamado direto pelo cliente.
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const EMERGENT_BASE = "https://integrations.emergentagent.com/llm/chat/completions";
+
+const FCC_BASE_URL = Deno.env.get("FCC_BASE_URL") || "https://unabashed-vertical-crispness.ngrok-free.dev";
+const FCC_AUTH_TOKEN = Deno.env.get("FCC_AUTH_TOKEN") || "freecc";
+const FCC_MODEL = Deno.env.get("FCC_MODEL") || "claude-3-freecc-no-thinking/nvidia_nim/nvidia/nemotron-3-super-120b-a12b";
 
 // Maps frontend model IDs to Emergent candidate model names (tries each in order)
 const MODEL_CANDIDATES: Record<string, string[]> = {
@@ -30,6 +34,51 @@ async function tryEmergent(key: string, model: string, payload: any): Promise<Re
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
     body: JSON.stringify({ ...payload, model }),
+  });
+}
+
+async function tryClaudeFCC(messages: any[], system?: string): Promise<Response> {
+  const apiMessages = messages.map((m: any) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: String(m.content || ""),
+  }));
+  const resp = await fetch(`${FCC_BASE_URL}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": FCC_AUTH_TOKEN,
+      "Authorization": `Bearer ${FCC_AUTH_TOKEN}`,
+      "anthropic-version": "2023-06-01",
+      "ngrok-skip-browser-warning": "true",
+    },
+    body: JSON.stringify({
+      model: FCC_MODEL,
+      max_tokens: 500,
+      stream: false,
+      system: system || "",
+      messages: apiMessages,
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    return new Response(JSON.stringify({ error: `Claude FCC ${resp.status}: ${text.slice(0, 200)}` }), {
+      status: resp.status,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  const data = await resp.json();
+  const textBlock = (data?.content || []).find((b: any) => b.type === "text");
+  const reply = String(textBlock?.text || "").trim();
+  // Convert to streaming-compatible format (SSE)
+  const sseData = `data: ${JSON.stringify({ choices: [{ delta: { content: reply } }] })}\n\ndata: [DONE]\n\n`;
+  return new Response(sseData, {
+    status: 200,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    },
   });
 }
 
@@ -75,7 +124,16 @@ Deno.serve(async (req) => {
           console.warn(`Emergent rejeitou modelo ${candidate}, tentando próximo...`);
           continue;
         }
-        // Other errors (429, 401, 500) — return immediately
+        // Budget exceeded or other errors — try Claude FCC fallback
+        console.warn(`Emergent falhou (${upstream.status}), tentando Claude FCC...`);
+        try {
+          const claudeResp = await tryClaudeFCC(messages, system);
+          if (claudeResp.ok) return claudeResp;
+          console.warn("Claude FCC também falhou:", await claudeResp.text().catch(() => ""));
+        } catch (claudeErr) {
+          console.warn("Claude FCC erro:", claudeErr);
+        }
+        // Return the original Emergent error
         let msg = lastError;
         if (upstream.status === 429) msg = "Limite de requisições excedido. Tente em instantes.";
         if (upstream.status === 401) msg = "Chave de API inválida. Verifique EMERGENT_API_KEY.";
@@ -96,8 +154,16 @@ Deno.serve(async (req) => {
       });
     }
 
-    // All candidates exhausted
-    return new Response(JSON.stringify({ error: `Nenhum modelo aceito pela Emergent. Último erro: ${lastError.slice(0, 200)}` }), {
+    // All Emergent candidates exhausted — try Claude FCC as last resort
+    console.warn("Todos os modelos Emergent falharam, tentando Claude FCC como último recurso...");
+    try {
+      const claudeResp = await tryClaudeFCC(messages, system);
+      if (claudeResp.ok) return claudeResp;
+    } catch (claudeErr) {
+      console.warn("Claude FCC último recurso falhou:", claudeErr);
+    }
+
+    return new Response(JSON.stringify({ error: `Emergent e Claude FCC falharam. Último erro Emergent: ${lastError.slice(0, 200)}` }), {
       status: lastStatus || 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

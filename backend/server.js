@@ -1446,23 +1446,84 @@ async function callAI(messagesPayload, options = {}) {
   return { ok: false, error: "Ollama qwen2.5:3b-instruct falhou e o chat não usa outro modelo de IA.", attempts, ...attempts[attempts.length - 1] };
 }
 
-async function generateCreativeImage(prompt) {
-  if (!LOVABLE_API_KEY) return { ok: false, error: "LOVABLE_API_KEY ausente no backend do Render." };
+async function generateCreativeImage(prompt, referenceImageBase64 = null, logoBase64 = null, provider = "auto") {
+  // Tenta Lovable primeiro (se disponível)
+  if (LOVABLE_API_KEY) {
+    try {
+      const result = await generateWithLovable(prompt, referenceImageBase64, logoBase64);
+      if (result.ok) return result;
+      console.warn("[creatives] Lovable failed, trying Pollinations:", result.error);
+    } catch (e) {
+      console.warn("[creatives] Lovable error, trying Pollinations:", e?.message);
+    }
+  }
+  
+  // Fallback para Pollinations (gratuito)
+  return await generateWithPollinations(prompt, referenceImageBase64, logoBase64);
+}
+
+async function generateWithLovable(prompt, referenceImageBase64 = null, logoBase64 = null) {
+  if (!LOVABLE_API_KEY) return { ok: false, error: "LOVABLE_API_KEY ausente." };
+  
+  let fullPrompt = `Arte quadrada profissional para redes sociais de um escritório de advocacia brasileiro. Tema: ${prompt}. Visual elegante, jurídico, humano, sem texto, sem letras, sem marcas d'água.`;
+  
+  // Se há imagem de referência, descreve para a IA usar como base
+  if (referenceImageBase64) {
+    fullPrompt += ` Use a imagem de referência fornecida como inspiration para o estilo, cores e composição. Mantenha a mesma estética visual.`;
+  }
+  
+  const body = {
+    model: "openai/gpt-image-2",
+    prompt: fullPrompt,
+    quality: "low",
+    size: "1024x1024",
+    stream: false,
+  };
+  
+  // Se há logo, inclui no prompt
+  if (logoBase64) {
+    body.prompt += ` Inclua discretamente o logo do escritório no canto inferior direito.`;
+  }
+  
   const resp = await fetch("https://ai.gateway.lovable.dev/v1/images/generations", {
     method: "POST",
     headers: { "Lovable-API-Key": LOVABLE_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "openai/gpt-image-2",
-      prompt: `Arte quadrada profissional para redes sociais de um escritório de advocacia brasileiro. Tema: ${prompt}. Visual elegante, jurídico, humano, sem texto, sem letras, sem marcas d'água.`,
-      quality: "low",
-      size: "1024x1024",
-      stream: false,
-    }),
+    body: JSON.stringify(body),
   });
+  
   const data = await resp.json().catch(async () => ({ error: await resp.text().catch(() => "Erro desconhecido") }));
   if (!resp.ok) return { ok: false, status: resp.status, error: data?.error || JSON.stringify(data) };
   const b64 = data?.data?.[0]?.b64_json;
   return b64 ? { ok: true, b64_json: b64 } : { ok: false, error: "Sem imagem gerada." };
+}
+
+async function generateWithPollinations(prompt, referenceImageBase64 = null, logoBase64 = null) {
+  try {
+    let fullPrompt = `Professional square social media art for a Brazilian law firm. Theme: ${prompt}. Elegant, legal, human visual, no text, no letters, no watermarks.`;
+    
+    if (referenceImageBase64) {
+      fullPrompt += ` Use the provided reference image as inspiration for style, colors and composition.`;
+    }
+    
+    if (logoBase64) {
+      fullPrompt += ` Discreetly include the law firm logo in the bottom right corner.`;
+    }
+    
+    // Pollinations API - gera imagem diretamente
+    const encodedPrompt = encodeURIComponent(fullPrompt);
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+    
+    // Baixa a imagem e converte para base64
+    const imgResp = await fetch(imageUrl);
+    if (!imgResp.ok) throw new Error(`Pollinations HTTP ${imgResp.status}`);
+    
+    const arrayBuffer = await imgResp.arrayBuffer();
+    const b64 = Buffer.from(arrayBuffer).toString("base64");
+    
+    return b64 ? { ok: true, b64_json: b64 } : { ok: false, error: "Sem imagem gerada." };
+  } catch (e) {
+    return { ok: false, error: `Pollinations: ${e?.message || String(e)}` };
+  }
 }
 
 const autoReplyDebug = { last: null, history: [] };
@@ -1706,9 +1767,17 @@ async function closeSock() {
   startSockLock = false;
 }
 
+let startSockLockAt = 0;
 async function startSock() {
+  // If lock is stuck for more than 5 minutes, force release
+  if ((starting || startSockLock) && startSockLockAt && Date.now() - startSockLockAt > 300000) {
+    console.log("[baileys] Force-releasing stuck lock (older than 5min)");
+    starting = false;
+    startSockLock = false;
+  }
   if (starting || startSockLock) return;
   startSockLock = true;
+  startSockLockAt = Date.now();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -1741,7 +1810,7 @@ async function startSock() {
     qrTimeout: QR_TIMEOUT_MS,
     connectTimeoutMs: CONNECT_TIMEOUT_MS,
     keepAliveIntervalMs: KEEP_ALIVE_INTERVAL_MS,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: true,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false,
     emitOwnEvents: false,
@@ -2030,8 +2099,17 @@ setInterval(async () => {
     if (connectionState !== "open" || !sock) return;
     // Don't trigger reconnect if already reconnecting
     if (reconnectTimer || startSockLock) return;
-    // Send a keepalive ping by checking if socket is still responsive
-    const isAlive = sock?.user && sock?.ws?.readyState === 1;
+    // Try to send a real Baileys ping to verify the connection is alive
+    let isAlive = false;
+    try {
+      if (sock?.user && sock?.ws?.readyState === 1) {
+        // Send a protocol-level ping via the WebSocket
+        sock.ws.send(Buffer.from([]));
+        isAlive = true;
+      }
+    } catch {
+      isAlive = false;
+    }
     if (!isAlive && connectionState === "open") {
       console.log("[keepalive] socket appears dead, triggering reconnect");
       lastError = "Conexão perdida — reconectando automaticamente...";
@@ -2040,7 +2118,7 @@ setInterval(async () => {
   } catch (e) {
     console.error("[keepalive] health check error:", e?.message);
   }
-}, 90000);
+}, 60000);
 
 // ---- Helpers ----
 const ok = (data = {}) => ({ ok: true, ...data });
@@ -2508,9 +2586,35 @@ app.get("/api/creatives", async (_req, res) => {
   }
 });
 
+// ---- Delete Creative ----
+app.delete("/api/creatives/:id", async (req, res) => {
+  if (!supabaseDb) return res.status(404).json({ error: "no db" });
+  try {
+    const { data: row } = await supabaseDb.from("generated_images")
+      .select("storage_path")
+      .eq("id", req.params.id)
+      .single();
+    
+    if (row?.storage_path) {
+      await supabaseDb.storage.from("creative-assets").remove([row.storage_path]);
+    }
+    
+    const { error } = await supabaseDb.from("generated_images").delete().eq("id", req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e?.message });
+  }
+});
+
 app.post("/api/creatives/generate", async (req, res) => {
   const topic = req.body?.topic || req.body?.title || req.body?.prompt || "post jurídico";
-  const result = await generateCreativeImage(topic).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+  const referenceImageBase64 = req.body?.reference_image_base64 || null;
+  const logoBase64 = req.body?.logo_base64 || null;
+  const provider = req.body?.provider || "auto";
+  
+  const result = await generateCreativeImage(topic, referenceImageBase64, logoBase64, provider).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+  
   const item = {
     id: `creative-${Date.now()}`,
     title: req.body?.title || topic,
@@ -2544,6 +2648,66 @@ app.post("/api/creatives/generate", async (req, res) => {
     }
   }
   res.status(201).json(item);
+});
+
+// ---- Edit Creative ----
+app.post("/api/creatives/edit", async (req, res) => {
+  const { id, image_base64, prompt, title, caption, network, format, storage_path, generated_image_id } = req.body || {};
+  if (!prompt || !image_base64) {
+    return res.status(400).json({ error: "prompt e image_base64 são obrigatórios" });
+  }
+  
+  try {
+    // Gera nova imagem com base na existente + prompt de edição
+    const result = await generateCreativeImage(
+      `Edite esta imagem: ${prompt}. Tema original: ${title || ""}`,
+      image_base64,
+      null,
+      "auto"
+    ).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+    
+    if (!result.ok) {
+      return res.json({ ok: false, error: result.error || "Não foi possível editar" });
+    }
+    
+    const item = {
+      ok: true,
+      image_b64: result.b64_json,
+      image: result.b64_json,
+    };
+    
+    // Atualiza no Supabase se disponível
+    if (supabaseDb && id) {
+      try {
+        const userId = req.user?.id || null;
+        if (userId && result.b64_json) {
+          // Upload da nova imagem
+          const path = `${userId}/edited-${Date.now()}.png`;
+          const { error: upErr } = await supabaseDb.storage
+            .from("creative-assets")
+            .upload(path, Buffer.from(result.b64_json, "base64"), {
+              contentType: "image/png", upsert: true,
+            });
+          
+          if (!upErr) {
+            // Atualiza o registro
+            await supabaseDb.from("generated_images")
+              .update({ 
+                storage_path: path,
+                prompt: prompt,
+              })
+              .eq("id", id);
+          }
+        }
+      } catch (e) {
+        console.warn("[creatives/edit] persist failed:", e?.message);
+      }
+    }
+    
+    res.json(item);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 // ---- WhatsApp Media ----
@@ -2664,3 +2828,20 @@ console.log("[kenia-backend] Starting... routes registered:", typeof app.get ===
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`[kenia-backend] Running on :${PORT} at ${new Date().toISOString()}`);
 });
+
+// ---- Self-ping to prevent Render free tier from sleeping ----
+const SELF_PING_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
+const SELF_PING_INTERVAL_MS = Number(process.env.SELF_PING_INTERVAL_MS || 600000); // 10 minutes
+if (SELF_PING_URL) {
+  console.log(`[self-ping] Will ping ${SELF_PING_URL} every ${SELF_PING_INTERVAL_MS / 1000}s to prevent Render sleep`);
+  setInterval(async () => {
+    try {
+      const res = await fetch(SELF_PING_URL, { method: "GET", signal: AbortSignal.timeout(15000) });
+      console.log(`[self-ping] OK ${res.status}`);
+    } catch (e) {
+      console.error(`[self-ping] FAILED: ${e?.message}`);
+    }
+  }, SELF_PING_INTERVAL_MS);
+} else {
+  console.log("[self-ping] No SELF_PING_URL/RENDER_EXTERNAL_URL set. Add SELF_PING_URL=https://your-app.onrender.com to .env to enable keep-alive.");
+}
