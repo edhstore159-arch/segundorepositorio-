@@ -1082,7 +1082,7 @@ export default function WhatsAppSettings() {
                 )}
               </div>
               <p className="text-sm text-nude-500 mt-1">
-                Responde automaticamente as mensagens recebidas usando GPT-4o Mini (Modelo de Crédito).
+                Responde automaticamente as mensagens recebidas usando Claude Sonnet (Emergent).
               </p>
               <p className="text-xs text-nude-400 mt-1">
                 Para ativar: clique no switch ao lado → o botão fica laranja → clique em <strong>Salvar</strong> no topo.

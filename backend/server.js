@@ -624,16 +624,16 @@ const appendMessage = (jid, msg) => {
   messagesStore.set(jid, list);
 };
 
-// ---- Atendente automático com IA (Gemini via Lovable AI Gateway primeiro; outras chaves como fallback) ----
+// ---- Atendente automático com IA (Claude Sonnet via Emergent primeiro; outras chaves como fallback) ----
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "claude-sonnet-4-5";
 const EMERGENT_API_KEY = process.env.EMERGENT_API_KEY || process.env.EMERGENT_LLM_KEY || "";
 const EMERGENT_BASE_URL =
   process.env.EMERGENT_BASE_URL || "https://integrations.emergentagent.com/llm/v1";
-const EMERGENT_MODEL = process.env.EMERGENT_MODEL || "gpt-4o-mini";
+const EMERGENT_MODEL = process.env.EMERGENT_MODEL || "claude-sonnet-4-5";
 const LOVABLE_API_KEY = process.env.LOVABLE_API_KEY || process.env.VITE_LOVABLE_API_KEY || "";
-const AI_MODEL = process.env.AI_MODEL || "google/gemini-3-flash-preview";
+const AI_MODEL = process.env.AI_MODEL || "claude-sonnet-4-5";
 const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_REQUEST_TIMEOUT_MS || 90000);
 const AUTO_REPLY_SEND_TIMEOUT_MS = Number(process.env.AUTO_REPLY_SEND_TIMEOUT_MS || 20000);
 const AUTO_REPLY_RETRY_EVERY_MS = Number(process.env.AUTO_REPLY_RETRY_EVERY_MS || 10000);
