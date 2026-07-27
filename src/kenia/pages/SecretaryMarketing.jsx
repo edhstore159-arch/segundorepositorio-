@@ -8,7 +8,7 @@ import { ScrollArea } from "@/kenia/components/ui/scroll-area";
 import {
   Send, Loader2, Target, MessageSquare, Phone, Users,
   Handshake, PhoneCall, Clock, Star, TrendingUp, CheckCircle2,
-  Sparkles, Save, X, Copy, FileDown
+  Sparkles, Save, X, Copy, FileDown, MessageCircle
 } from "lucide-react";
 import { toast } from "sonner";
 import { CHAT_DEFAULT_PROMPT, loadChatConfig, saveChatConfig } from "@/kenia/storage/chatSecretary";
@@ -77,6 +77,8 @@ export default function SecretaryMarketing() {
   const [autoLoopResults, setAutoLoopResults] = useState(null);
   const [stats, setStats] = useState(saved.stats || { total: 0, passed: 0, avgScore: 0 });
   const [sessions, setSessions] = useState(saved.sessions || []);
+  const [sendTargetPhone, setSendTargetPhone] = useState("");
+  const [sendingToWhatsApp, setSendingToWhatsApp] = useState(false);
   const chatEndRef = useRef(null);
 
   useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, stats })); }, [sessions, stats]);
@@ -202,6 +204,33 @@ export default function SecretaryMarketing() {
   const copyToClipboard = () => {
     navigator.clipboard.writeText(improveModal.improved_prompt);
     toast.success("Prompt copiado!");
+  };
+
+  const sendResponseToWhatsApp = async () => {
+    if (!currentSession?.score) return toast.error("Faça uma avaliação primeiro");
+    const phone = sendTargetPhone.trim().replace(/\D/g, "");
+    if (!phone || phone.length < 10) return toast.error("Informe um telefone válido (ex: 64999881043)");
+    setSendingToWhatsApp(true);
+    try {
+      const improvedMsg = currentSession.messages
+        .filter((m) => m.content?.includes("📝 **Resposta Padrão Real:**"))
+        .pop()?.content?.split("📝 **Resposta Padrão Real:**\n")?.[1]?.trim();
+      if (!improvedMsg) return toast.error("Nenhuma resposta padrão encontrada na avaliação");
+      const baseUrl = import.meta.env.VITE_BACKEND_URL || "https://kenia-whatsapp-backend.onrender.com";
+      const resp = await fetch(`${baseUrl}/api/whatsapp/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: phone, message: improvedMsg }),
+      });
+      const result = await resp.json();
+      if (!resp.ok || result.error) throw new Error(result.error || "Falha no envio");
+      toast.success(`Resposta enviada para +55${phone}!`);
+      setSendTargetPhone("");
+    } catch (e) {
+      toast.error("Erro ao enviar: " + (e?.message || e));
+    } finally {
+      setSendingToWhatsApp(false);
+    }
   };
 
   const startAutoTraining = async () => {
@@ -694,6 +723,16 @@ export default function SecretaryMarketing() {
                 {improving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                 Melhorar Prompt da Secretária
               </Button>
+              <div className="flex gap-1.5 items-center">
+                <Input value={sendTargetPhone} onChange={(e) => setSendTargetPhone(e.target.value)}
+                  placeholder="Telefone do cliente (ex: 64999881043)"
+                  className="flex-1 text-xs h-8" />
+                <Button size="sm" onClick={sendResponseToWhatsApp} disabled={sendingToWhatsApp || !sendTargetPhone.trim()}
+                  className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 shrink-0">
+                  {sendingToWhatsApp ? <Loader2 className="w-3 h-3 animate-spin" /> : <MessageCircle className="w-3 h-3" />}
+                  Enviar p/ WhatsApp
+                </Button>
+              </div>
               <Button size="sm" variant="outline" onClick={generatePDF}
                 className="w-full text-xs gap-1.5 border-blue-200 hover:bg-blue-50 text-blue-700">
                 <FileDown className="w-3 h-3" />
@@ -744,6 +783,16 @@ export default function SecretaryMarketing() {
                   {improving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                   Melhorar Prompt
                 </Button>
+                <div className="flex gap-1.5 items-center">
+                  <Input value={sendTargetPhone} onChange={(e) => setSendTargetPhone(e.target.value)}
+                    placeholder="Telefone (ex: 64999881043)"
+                    className="flex-1 text-xs h-8" />
+                  <Button size="sm" onClick={sendResponseToWhatsApp} disabled={sendingToWhatsApp || !sendTargetPhone.trim()}
+                    className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 shrink-0">
+                    {sendingToWhatsApp ? <Loader2 className="w-3 h-3 animate-spin" /> : <MessageCircle className="w-3 h-3" />}
+                    Enviar
+                  </Button>
+                </div>
                 <Button size="sm" variant="outline" onClick={generatePDF}
                   className="w-full text-xs gap-1.5 border-blue-200 hover:bg-blue-50 text-blue-700">
                   <FileDown className="w-3 h-3" />
